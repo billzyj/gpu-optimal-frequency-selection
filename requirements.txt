@@ -1,0 +1,23 @@
+# GPU Optimal Frequency Selection - Python dependencies
+#
+# Notes:
+# 1. The current three-stage EVeREST core (Phase Identification /
+#    Phase Characterization / Frequency Scaling) runs on Python stdlib only.
+# 2. Dependencies below are for experiment orchestration, analysis, and
+#    vendor telemetry/control integration in later phases.
+
+# ---- Common experiment/data utilities ----
+numpy>=1.26,<3
+pandas>=2.2,<3
+scipy>=1.12,<2
+matplotlib>=3.8,<4
+pyyaml>=6.0,<7
+tqdm>=4.66,<5
+
+# ---- NVIDIA telemetry/control ----
+# NVML Python binding (used with nvidia-smi/NVML-based control paths)
+nvidia-ml-py>=12.0,<13
+
+# ---- Vendor SDK notes (not pinned here) ----
+# DCGM Python bindings are usually installed with NVIDIA DCGM system packages.
+# ROCm SMI / AMD SMI Python bindings are usually installed via ROCm packages.
