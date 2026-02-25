@@ -15,7 +15,7 @@ The repository uses a four-layer separation:
 1. Method layer: `src/methods/*`
 2. Shared runtime/contracts layer: `src/common/*`
 3. Experiment assets layer: `config`, `scripts`, `analysis`, `artifacts`
-4. Third-party sources layer: `third_party/*` (recommended for external code such as EAR)
+4. External benchmark sources layer: `external/*` (git submodules for external benchmark repositories)
 
 ### Method taxonomy
 
@@ -95,22 +95,29 @@ Not implemented yet:
 2. Hardware telemetry/control integration (DCGM/NVML/ROCm SMI)
 3. End-to-end runner integration with `scripts` and `config`
 
-## 5. EAR Integration Recommendation
+## 5. External Benchmark Integration
 
-1. Keep EAR source in `third_party/ear` (git submodule, pinned commit/tag).
-2. Keep Python wrappers in `src/methods/third_party/ear_external`.
-3. Do not mix EAR C source into `src/`.
-4. Normalize EAR outputs to the same processed schema used by online methods.
+1. Keep external benchmark source in `external/repacss-benchmarking` as a git submodule.
+2. Pin external source by submodule commit (or upstream tag) for reproducibility.
+3. Keep Python wrappers in `src/methods/third_party/ear_external`.
+4. Do not mix benchmark framework source into `src/`.
+5. Normalize external outputs to the same processed schema used by online methods.
 
 ## 6. Quick Start
 
-1. Install dependencies:
+1. Initialize submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+2. Install dependencies:
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-2. Run unit tests:
+3. Run unit tests:
 
 ```bash
 python3 -m unittest discover -s tests -p "test_*.py"

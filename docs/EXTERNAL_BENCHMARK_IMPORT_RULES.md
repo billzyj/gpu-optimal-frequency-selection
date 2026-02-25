@@ -8,6 +8,10 @@ This repository is responsible for algorithm comparison and experiment analysis.
 2. Benchmark execution is delegated to an external benchmarking repository.
 3. This repository only imports, normalizes, and validates benchmark results.
 
+Current external benchmarking source:
+
+1. `external/repacss-benchmarking` (git submodule)
+
 ## 2. Role Boundary
 
 ### 2.1 External benchmarking repository responsibilities
