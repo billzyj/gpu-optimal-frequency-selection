@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.common.experiment.types import MetricWindow
-from src.everest.phase_identification import PhaseIdentifier
+from src.methods.reimplemented_methods.everest_reimpl.phase_identification import PhaseIdentifier
 
 
 def make_window(sequence_id: int, gpu: float, mem: float, duration_s: float = 1.0) -> MetricWindow:

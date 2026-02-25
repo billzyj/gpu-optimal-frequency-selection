@@ -135,3 +135,15 @@ class FinalSummary:
     pd_violation_count: int
     max_pd_violation: float
     custom_summary: dict[str, JSONValue] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class ExternalRunResult:
+    """Result returned by an external (job-level) comparison method."""
+
+    policy_name: str
+    run_id: str
+    command: list[str]
+    return_code: int
+    artifact_paths: dict[str, str] = field(default_factory=dict)
+    custom_summary: dict[str, JSONValue] = field(default_factory=dict)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.everest.phase_characterization import PhaseCharacterizer
+from src.methods.reimplemented_methods.everest_reimpl.phase_characterization import PhaseCharacterizer
 
 
 class PhaseCharacterizerTests(unittest.TestCase):

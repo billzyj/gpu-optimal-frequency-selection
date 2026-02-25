@@ -5,6 +5,7 @@ from typing import Mapping, Protocol, runtime_checkable
 from .types import (
     AlgorithmState,
     Decision,
+    ExternalRunResult,
     ExperimentContext,
     FinalSummary,
     MetricWindow,
@@ -36,3 +37,20 @@ class AlgorithmInterface(Protocol):
 
     def finalize(self, state: AlgorithmState) -> FinalSummary:
         """Builds an end-of-run summary."""
+
+
+@runtime_checkable
+class ExternalMethodInterface(Protocol):
+    """
+    Job-level contract for external comparison methods.
+
+    External methods are executed out-of-process and return
+    normalized artifact references for later analysis.
+    """
+
+    def run_external(
+        self,
+        context: ExperimentContext,
+        config: Mapping[str, object],
+    ) -> ExternalRunResult:
+        """Runs one external method execution and returns normalized metadata."""

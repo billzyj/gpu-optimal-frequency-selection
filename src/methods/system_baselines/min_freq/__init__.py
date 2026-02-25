@@ -1,0 +1,1 @@
+"""Min-frequency baseline placeholder."""

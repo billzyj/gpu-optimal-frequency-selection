@@ -2,156 +2,103 @@
 
 ## 1. Objectives
 
-This repository is designed to support three workflows at the same time:
+This repository supports three workflows in one framework:
 
-1. Reproduce existing GPU DVFS methods (starting with EVeREST).
-2. Benchmark multiple policies under one shared experimental protocol.
-3. Rapidly develop and evaluate your own algorithm.
+1. Reproduce reference GPU DVFS methods (EVEREST, Ali proxy, EAR, Oracle).
+2. Compare all methods under a shared protocol and schema.
+3. Develop and evaluate a proposed method quickly.
 
-The architecture enforces a strict separation between:
+## 2. Layering
 
-1. Algorithm logic.
-2. Shared runtime infrastructure.
-3. Shared experiment operations and analysis.
+1. Method layer: `src/methods`
+2. Shared runtime/contracts: `src/common`
+3. Experiment assets: `config`, `scripts`, `analysis`, `artifacts`
+4. Third-party sources: `third_party` (recommended, e.g., EAR submodule)
 
-## 2. Directory Design
+## 3. Method Taxonomy
 
 ```text
-.
-├── src/
-│   ├── common/
-│   │   ├── telemetry/
-│   │   ├── control/
-│   │   ├── power/
-│   │   ├── experiment/
-│   │   ├── io/
-│   │   └── cli/
-│   ├── everest/
-│   │   ├── phase_identification/
-│   │   ├── phase_characterization/
-│   │   ├── frequency_scaling/
-│   │   └── policy/
-│   ├── baselines/
-│   │   ├── max_freq/
-│   │   ├── static_oracle/
-│   │   ├── util_policy/
-│   │   └── ali_fp_proxy/
-│   └── custom/
-│       ├── my_algo/
-│       └── templates/
-├── config/
-│   ├── common/
-│   ├── platforms/
-│   ├── workloads/
-│   ├── experiments/
-│   └── algorithms/
-│       ├── everest/
-│       └── my_algo/
-├── scripts/
-│   ├── setup/
-│   ├── run/
-│   ├── sweep/
-│   ├── collect/
-│   └── reproduce/
-├── analysis/
-│   ├── schema/
-│   ├── notebooks/
-│   ├── plots/
-│   └── reports/
-├── artifacts/
-│   ├── raw/
-│   ├── processed/
-│   └── figures/
-├── references/
-│   └── papers/
-└── docs/
+src/methods/
+├── system_baselines/
+│   ├── max_freq/
+│   ├── min_freq/
+│   └── util_policy/
+├── reimplemented_methods/
+│   ├── everest_reimpl/
+│   ├── ali_reimpl/
+│   └── oracle_static/
+├── third_party/
+│   └── ear_external/
+└── proposed_methods/
+    └── my_method/
 ```
 
-## 3. Responsibilities by Layer
+### 3.1 `system_baselines`
 
-## 3.1 `src/common` (shared code)
+Simple controls with low implementation cost and high interpretability.
 
-Holds modules reused by all algorithms:
+### 3.2 `reimplemented_methods`
 
-1. Telemetry adapters (NVIDIA/AMD counters).
-2. Frequency/power actuation wrappers.
-3. Experiment runner primitives (windowing, logging, timing).
-4. Common data models and I/O contracts.
+Reference methods from papers/systems, re-implemented in this repository.
 
-Rule: no algorithm-specific heuristics here.
+### 3.3 `third_party`
 
-## 3.2 `src/everest` (paper reproduction)
+Method wrappers for systems that run outside Python runtime (e.g., EAR in C/runtime stack).
 
-Holds EVeREST-specific logic only:
+### 3.4 `proposed_methods`
 
-1. Phase Identification: phase signature and change detection.
-2. Phase Characterization: frequency sensitivity from memory utilization.
-3. Frequency Scaling: target-frequency computation from FS + PD.
+Your new method for paper contributions.
 
-Rule: this directory should mirror EVeREST methodology, not become a generic utility bucket.
+## 4. Contracts
 
-## 3.3 `src/baselines` (comparison policies)
+## 4.1 Online methods (`AlgorithmInterface`)
 
-Holds baseline implementations under the same runner:
+Defined in `src/common/experiment/interfaces.py`:
 
-1. `max_freq`
-2. `static_oracle`
-3. `util_policy` (EAR-like)
-4. `ali_fp_proxy` (NVIDIA-oriented proxy)
+1. `initialize(context, config) -> AlgorithmState`
+2. `on_window(metrics, state) -> Decision`
+3. `finalize(state) -> FinalSummary`
 
-Rule: each baseline is independently runnable and shares the same output schema.
+Applies to:
 
-## 3.4 `src/custom` (your algorithm path)
+1. `system_baselines`
+2. `reimplemented_methods` methods that run online in Python
+3. `proposed_methods`
 
-Holds your future work:
+## 4.2 External methods (`ExternalMethodInterface`)
 
-1. `my_algo`: main implementation.
-2. `templates`: algorithm scaffolds and interface templates.
+Defined in `src/common/experiment/interfaces.py`:
 
-Rule: new ideas are implemented here first, then promoted to stable interfaces if needed.
+1. `run_external(context, config) -> ExternalRunResult`
 
-## 3.5 `config`, `scripts`, `analysis` (shared experiment system)
+Applies to:
 
-1. `config`: declarative configuration for hardware, workloads, experiments, and per-algorithm parameters.
-2. `scripts`: orchestration entry points for setup, run, sweep, and result collection.
-3. `analysis`: shared schema, plotting, and report generation for all algorithms.
+1. `third_party/ear_external`
 
-Rule: these directories are algorithm-agnostic by default.
+External methods are job-level executions and must normalize outputs into repository artifact schema.
 
-## 4. Interface Contracts
+## 5. Shared Modules (`src/common`)
 
-To keep all algorithms comparable, each policy should expose the same minimal interface:
+1. `experiment`: common contracts, types, validation.
+2. `telemetry`: vendor-specific metric adapters under a unified API.
+3. `control`: clock/power actuation adapters.
+4. `power`: power/energy collection adapters.
+5. `io`: schema-safe artifact read/write helpers.
 
-1. `initialize(context, config)`
-2. `on_window(metrics, state) -> decision`
-3. `finalize(state) -> summary`
+Rule: no method-specific heuristics in `src/common`.
 
-Where `decision` includes:
+## 6. Data Conventions
 
-1. `target_graphics_clock`
-2. `reason_code`
-3. `debug_fields` (optional)
+1. `artifacts/raw`: raw logs, vendor outputs, and trace snapshots.
+2. `artifacts/processed`: normalized run/window tables.
+3. `artifacts/figures`: generated plots.
 
-This contract allows one runner to execute EVeREST, baselines, and custom algorithms uniformly.
+All methods (online and external) must produce comparable processed outputs.
 
-## 5. Data and Artifact Conventions
+## 7. Recommended Expansion Order
 
-1. Raw run outputs go to `artifacts/raw`.
-2. Aggregated tables go to `artifacts/processed`.
-3. Generated figures go to `artifacts/figures`.
-4. Analysis code must read from artifacts, not from live logs directly.
-
-## 6. Development Flow
-
-1. Add or modify algorithm code in `src/everest`, `src/baselines`, or `src/custom`.
-2. Add algorithm config in `config/algorithms/<algorithm_name>/`.
-3. Run experiments via `scripts/run` and parameter sweeps via `scripts/sweep`.
-4. Collect and normalize outputs via `scripts/collect`.
-5. Generate plots/reports from `analysis`.
-
-## 7. Design Principles
-
-1. Reproducibility first: one config should fully describe one experiment.
-2. Comparability first: same workload + same protocol + same schema.
-3. Extensibility first: new algorithms should not require directory refactoring.
-4. Vendor portability: keep NVIDIA/AMD details behind shared adapters.
+1. Implement EVEREST `policy` loop.
+2. Implement `oracle_static` and simple baselines.
+3. Complete EAR external launcher/parser/adapter.
+4. Build unified runners in `scripts/run` for online and external methods.
+5. Freeze analysis schema and add integration tests.

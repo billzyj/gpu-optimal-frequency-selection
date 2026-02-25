@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.common.experiment.types import PlatformSpec
-from src.everest.frequency_scaling import FrequencyScaler
+from src.methods.reimplemented_methods.everest_reimpl.frequency_scaling import FrequencyScaler
 
 
 class FrequencyScalerTests(unittest.TestCase):

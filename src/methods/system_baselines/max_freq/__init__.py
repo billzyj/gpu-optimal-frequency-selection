@@ -1,0 +1,1 @@
+"""Max-frequency baseline placeholder."""

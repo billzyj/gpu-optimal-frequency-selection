@@ -234,19 +234,23 @@ Proposed structure:
 │   │   ├── experiment/
 │   │   ├── io/
 │   │   └── cli/
-│   ├── everest/
-│   │   ├── phase_identification/
-│   │   ├── phase_characterization/
-│   │   ├── frequency_scaling/
-│   │   └── policy/
-│   ├── baselines/
-│   │   ├── max_freq/
-│   │   ├── static_oracle/
-│   │   ├── util_policy/
-│   │   └── ali_fp_proxy/
-│   └── custom/
-│       ├── my_algo/
-│       └── templates/
+│   ├── methods/
+│   │   ├── system_baselines/
+│   │   │   ├── max_freq/
+│   │   │   ├── min_freq/
+│   │   │   └── util_policy/
+│   │   ├── reimplemented_methods/
+│   │   │   ├── everest_reimpl/
+│   │   │   │   ├── phase_identification/
+│   │   │   │   ├── phase_characterization/
+│   │   │   │   ├── frequency_scaling/
+│   │   │   │   └── policy/
+│   │   │   ├── ali_reimpl/
+│   │   │   └── oracle_static/
+│   │   ├── third_party/
+│   │   │   └── ear_external/
+│   │   └── proposed_methods/
+│   │       └── my_method/
 ├── config/
 │   ├── common/
 │   ├── platforms/
@@ -254,7 +258,7 @@ Proposed structure:
 │   ├── experiments/
 │   └── algorithms/
 │       ├── everest/
-│       └── my_algo/
+│       └── my_method/
 ├── scripts/
 │   ├── setup/
 │   ├── run/
@@ -277,10 +281,10 @@ Proposed structure:
 
 Implementation mapping for EVeREST:
 
-1. EVeREST-specific logic is only in `src/everest`.
+1. EVeREST-specific logic is in `src/methods/reimplemented_methods/everest_reimpl`.
 2. Shared sampling/actuation/runner infrastructure stays in `src/common`.
-3. Baseline policies live in `src/baselines` and reuse the same runner.
-4. Your future algorithm is developed in `src/custom/my_algo` with the same experiment pipeline.
+3. Simple baselines and references live in `src/methods/*` and reuse the same runner contracts.
+4. Your future algorithm is developed in `src/methods/proposed_methods/my_method` with the same experiment pipeline.
 
 ## 7. Milestones
 
