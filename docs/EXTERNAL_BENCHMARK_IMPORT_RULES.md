@@ -27,6 +27,7 @@ Current external benchmarking source:
 2. Validate schema and required fields of imported artifacts.
 3. Normalize imported artifacts into internal processed outputs.
 4. Run policy-level comparison and generate analysis outputs.
+5. Own algorithm-control orchestration for real-time frequency decisions.
 
 ## 3. Integration Contract
 
@@ -35,8 +36,16 @@ Current external benchmarking source:
 1. Integration must use `ExternalMethodInterface` from `src/common/experiment/interfaces.py`.
 2. External benchmark calls are treated as job-level executions.
 3. The adapter must return `ExternalRunResult` with resolved artifact paths.
+4. For online control experiments, submit one top-level job from this repository and run benchmark/control loop in the same allocation.
+5. Bridge code in this repository must not submit nested independent benchmark jobs.
 
-### 3.2 Minimum required imported fields per run
+### 3.2 Adapter boundary
+
+1. External repository adapters own benchmark runtime and site-specific execution details.
+2. This repository adapters act as orchestration bridges (control loop, import, normalization).
+3. Benchmark deployment logic must remain in the external repository.
+
+### 3.3 Minimum required imported fields per run
 
 1. `run_id`
 2. `workload_name`
@@ -49,7 +58,7 @@ Current external benchmarking source:
 9. `energy_joules`
 10. `status` (`success` or `failed`)
 
-### 3.3 Optional recommended fields
+### 3.4 Optional recommended fields
 
 1. `gpu_count`
 2. `node_name`
@@ -86,14 +95,16 @@ Current external benchmarking source:
 1. New benchmark installation logic must not be added under `scripts/setup` in this repository.
 2. Cluster-specific benchmark deployment logic must remain outside this repository.
 3. Local scripts in this repository may orchestrate imports but must not own benchmark lifecycle management.
+4. Local bridge scripts may launch benchmark commands inside an existing allocation for controlled experiments.
 
 ## 8. Compliance Checklist
 
 For every new external benchmark integration, confirm:
 
 1. Adapter uses `ExternalMethodInterface`.
-2. Required fields in Section 3.2 are present.
+2. Required fields in Section 3.3 are present.
 3. Artifact paths are absolute and readable.
 4. Units and timestamps follow Section 4.
 5. External source version is pinned.
 6. Failed runs are excluded from aggregate metrics by default.
+7. Controlled-mode integrations do not submit nested independent benchmark jobs.

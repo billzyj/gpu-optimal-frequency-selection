@@ -13,7 +13,7 @@ This repository supports three workflows in one framework:
 1. Method layer: `src/methods`
 2. Shared runtime/contracts: `src/common`
 3. Experiment assets: `config`, `scripts`, `analysis`, `artifacts`
-4. Third-party sources: `third_party` (recommended, e.g., EAR submodule)
+4. External benchmark sources: `external` (git submodules, e.g., `repacss-benchmarking`)
 
 ## 3. Method Taxonomy
 
@@ -49,6 +49,11 @@ Method wrappers for systems that run outside Python runtime (e.g., EAR in C/runt
 
 Your new method for paper contributions.
 
+### 3.5 `external/*` submodules
+
+External repositories own benchmark runtime and site/vendor adapter logic.
+This repository must consume them through bridge interfaces instead of copying their execution internals.
+
 ## 4. Contracts
 
 ## 4.1 Online methods (`AlgorithmInterface`)
@@ -73,7 +78,7 @@ Defined in `src/common/experiment/interfaces.py`:
 
 Applies to:
 
-1. `third_party/ear_external`
+1. `src/methods/third_party/*` bridge modules
 
 External methods are job-level executions and must normalize outputs into repository artifact schema.
 
@@ -99,6 +104,19 @@ All methods (online and external) must produce comparable processed outputs.
 
 1. Implement EVEREST `policy` loop.
 2. Implement `oracle_static` and simple baselines.
-3. Complete EAR external launcher/parser/adapter.
-4. Build unified runners in `scripts/run` for online and external methods.
+3. Complete benchmark bridge launcher/parser/adapter for external submodules.
+4. Build unified runners in `scripts/run` for controlled mode and external-only mode.
 5. Freeze analysis schema and add integration tests.
+
+## 8. Orchestration Boundary
+
+For online control experiments:
+
+1. Submit one top-level `sbatch` job from this repository.
+2. Run algorithm control loop and benchmark process in the same allocation.
+3. Use external repository adapters for benchmark execution details only.
+4. Do not rely on nested independent job submission from bridge code.
+
+Reference:
+
+1. `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`

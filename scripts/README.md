@@ -5,7 +5,7 @@ Shared operational scripts used by all algorithms.
 ## Layout
 
 1. `setup`: environment and dependency setup.
-2. `run`: single-run entry points.
+2. `run`: single-run entry points and top-level orchestrators (see `scripts/run/README.md`).
 3. `sweep`: parameter/frequency sweeps.
 4. `collect`: result aggregation and normalization.
 5. `reproduce`: paper-oriented reproduction wrappers.

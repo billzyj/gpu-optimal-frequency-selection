@@ -47,6 +47,9 @@ src/
 │   │   └── ear_external/        # external-process wrapper skeleton
 │   └── proposed_methods/
 │       └── my_method/
+
+external/
+└── repacss-benchmarking/  # submodule: benchmark execution adapters
 ```
 
 ## 3. Interfaces
@@ -99,9 +102,11 @@ Not implemented yet:
 
 1. Keep external benchmark source in `external/repacss-benchmarking` as a git submodule.
 2. Pin external source by submodule commit (or upstream tag) for reproducibility.
-3. Keep Python wrappers in `src/methods/third_party/ear_external`.
-4. Do not mix benchmark framework source into `src/`.
-5. Normalize external outputs to the same processed schema used by online methods.
+3. Treat external adapters as the execution layer (site/vendor/runtime specifics).
+4. Treat this repository adapters as the orchestration bridge (algorithm loop, control, artifact import).
+5. For real-time control experiments, submit one top-level `sbatch` from this repository and run benchmark plus algorithm loop in the same allocation.
+6. Do not duplicate benchmark deployment/runtime logic under `src/`; only bridge to external adapters.
+7. Normalize external outputs to the same processed schema used by online methods.
 
 ## 6. Quick Start
 
@@ -127,11 +132,12 @@ python3 -m unittest discover -s tests -p "test_*.py"
 
 1. Implement EVEREST `policy` in `src/methods/reimplemented_methods/everest_reimpl/policy`.
 2. Implement `oracle_static` and simple baselines (`max_freq`, `min_freq`).
-3. Implement `ear_external` launcher/parser/adapter wiring.
-4. Add unified run entry points in `scripts/run` for online and external methods.
+3. Implement bridge launcher/parser/adapter wiring for external benchmark integration.
+4. Add unified run entry points in `scripts/run` for controlled-mode and external-only runs.
 5. Freeze output schema in `analysis/schema`.
 
 ## 8. Key Docs
 
 1. `docs/REPO_ARCHITECTURE.md`: architecture and extension workflow.
 2. `docs/EVEREST_REPRODUCTION_PLAN.md`: EVEREST methodology and staged implementation plan.
+3. `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`: ownership split and runtime model for benchmark-control integration.
