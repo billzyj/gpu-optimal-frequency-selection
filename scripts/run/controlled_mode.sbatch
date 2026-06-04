@@ -10,7 +10,9 @@ set -euo pipefail
 #
 # This script is submitted from this repository and owns the job lifecycle.
 # It starts an external benchmark adapter command as a child process,
-# then runs a periodic control loop hook in the same allocation.
+# then runs a long-lived control loop runner in the same allocation.
+# The runner owns the per-window loop, sleeping, state, and finalization
+# internally and exits when the benchmark process dies.
 #
 # Required environment variables:
 # - BENCH_ID: benchmark id used by external contract path (e.g., ior, lammps, hpl, osu)
@@ -20,16 +22,22 @@ set -euo pipefail
 # Optional environment variables:
 # - POLICY_NAME: algorithm/policy label (default: max_freq)
 # - PD_TARGET: performance-degradation target (default: 0.0)
-# - CONTROL_WINDOW_SECONDS: loop interval in seconds (default: 5)
+# - CONTROL_WINDOW_SECONDS: per-window sleep interval used by the runner (default: 5)
 # - SITE_PROFILE: external site profile (default: repacss_zen4)
 # - EXPERIMENT_ID: experiment id in run artifacts (default: controlled)
 # - RUN_ROOT: external run root directory (default: <repo>/artifacts/raw/external_runs)
 # - RUN_ID: external run id (default: job-<slurm_job_id>-<policy>)
 # - BENCH_ARGS: benchmark run arguments passed to BENCH_RUN_SCRIPT
-# - CONTROL_HOOK_CMD: command executed every control window
-#   (default: python3 scripts/run/control_hook.py)
-# - POLICY_CONFIG_PATH / POLICY_CONFIG_JSON: optional policy config for control_hook.py
-# - APPLY_CLOCK_CMD_TEMPLATE: optional apply command template for control_hook.py
+# - BENCH_PID: set automatically by this orchestrator from the benchmark child process;
+#   exported to the runner so it can loop while that pid is alive
+# - CONTROL_LOOP_CMD: command for the long-lived runner process
+#   (default: python3 scripts/run/control_loop.py)
+# - MAX_CONSECUTIVE_FAILURES: max consecutive window failures before the runner aborts
+#   (default: 5, passed through to control_loop.py via env)
+# - POLICY_CONFIG_PATH / POLICY_CONFIG_JSON: optional policy config for control_loop.py
+# - APPLY_CLOCK_CMD_TEMPLATE: optional apply command template for control_loop.py
+# - APPLY_CLOCK_RESET_CMD: optional reset command run during cleanup/trap
+# - CONTROL_DECISIONS_CSV: optional control decision CSV path
 #
 # Example:
 # sbatch --export=ALL,\
@@ -53,7 +61,8 @@ EXPERIMENT_ID="${EXPERIMENT_ID:-controlled}"
 RUN_ROOT="${RUN_ROOT:-${REPO_ROOT}/artifacts/raw/external_runs}"
 RUN_ID="${RUN_ID:-job-${SLURM_JOB_ID:-local}-${POLICY_NAME}}"
 BENCH_ARGS="${BENCH_ARGS:-}"
-CONTROL_HOOK_CMD="${CONTROL_HOOK_CMD:-}"
+CONTROL_LOOP_CMD="${CONTROL_LOOP_CMD:-}"
+APPLY_CLOCK_RESET_CMD="${APPLY_CLOCK_RESET_CMD:-}"
 
 if [[ -z "$BENCH_ID" || -z "$BENCH_RUN_SCRIPT" ]]; then
   echo "Error: BENCH_ID and BENCH_RUN_SCRIPT are required."
@@ -84,8 +93,8 @@ RUN_DIR="${RUN_ROOT%/}/${EXPERIMENT_ID}/${SITE_PROFILE}/${BENCH_ID}/${RUN_ID}"
 CONTROL_LOG="${RUN_DIR}/control_loop.log"
 mkdir -p "$RUN_DIR"
 
-if [[ -z "$CONTROL_HOOK_CMD" ]]; then
-  CONTROL_HOOK_CMD='python3 "$REPO_ROOT/scripts/run/control_hook.py"'
+if [[ -z "$CONTROL_LOOP_CMD" ]]; then
+  CONTROL_LOOP_CMD="python3 \"$REPO_ROOT/scripts/run/control_loop.py\""
 fi
 
 echo "[orchestrator] repo_root=$REPO_ROOT"
@@ -106,23 +115,44 @@ cleanup() {
   if kill -0 "$BENCH_PID" >/dev/null 2>&1; then
     kill "$BENCH_PID" >/dev/null 2>&1 || true
   fi
+  reset_clock
+}
+
+RESET_CLOCK_ATTEMPTED=0
+reset_clock() {
+  if [[ -z "$APPLY_CLOCK_RESET_CMD" || "$RESET_CLOCK_ATTEMPTED" -ne 0 ]]; then
+    return
+  fi
+  RESET_CLOCK_ATTEMPTED=1
+  echo "[orchestrator] resetting clock via APPLY_CLOCK_RESET_CMD"
+  set +e
+  bash -lc "$APPLY_CLOCK_RESET_CMD"
+  RESET_RC=$?
+  set -e
+  if [[ "$RESET_RC" -ne 0 ]]; then
+    echo "[orchestrator] warning: clock reset command failed: $RESET_RC"
+  fi
 }
 trap cleanup EXIT INT TERM
 
-WINDOW_INDEX=0
-while kill -0 "$BENCH_PID" >/dev/null 2>&1; do
-  sleep "$CONTROL_WINDOW_SECONDS"
-  if ! kill -0 "$BENCH_PID" >/dev/null 2>&1; then
-    break
-  fi
-  WINDOW_INDEX=$((WINDOW_INDEX + 1))
+# Export all env the runner needs; BENCH_PID tells the runner which process to
+# watch — it will loop internally until that pid exits, then finalize and return.
+export REPO_ROOT EXTERNAL_REPO_ROOT POLICY_NAME PD_TARGET CONTROL_WINDOW_SECONDS
+export BENCH_ID BENCH_SCRIPT_ABS RUN_DIR CONTROL_LOG BENCH_PID
 
-  export REPO_ROOT EXTERNAL_REPO_ROOT POLICY_NAME PD_TARGET CONTROL_WINDOW_SECONDS WINDOW_INDEX
-  export BENCH_ID BENCH_SCRIPT_ABS RUN_DIR CONTROL_LOG
+# Run the long-lived control loop runner once in the foreground.
+# It blocks and loops internally (initialize -> on_window* -> finalize) until
+# the benchmark pid dies, then writes control/final_summary.json and returns.
+# Use set +e so a non-zero runner exit does not bypass the wait/cleanup below.
+set +e
+bash -lc "$CONTROL_LOOP_CMD"
+CONTROL_RC=$?
+set -e
 
-  # Hook point: replace with your real control-loop command.
-  bash -lc "$CONTROL_HOOK_CMD"
-done
+echo "[orchestrator] control loop return code: $CONTROL_RC"
+if [[ "$CONTROL_RC" -ne 0 ]]; then
+  cleanup
+fi
 
 set +e
 wait "$BENCH_PID"
@@ -130,6 +160,9 @@ BENCH_RC=$?
 set -e
 
 echo "[orchestrator] benchmark return code: $BENCH_RC"
+if [[ "$CONTROL_RC" -ne 0 ]]; then
+  exit "$CONTROL_RC"
+fi
 if [[ "$BENCH_RC" -ne 0 ]]; then
   exit "$BENCH_RC"
 fi

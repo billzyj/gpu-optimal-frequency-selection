@@ -1,143 +1,103 @@
 # GPU Optimal Frequency Selection
 
-A multi-method GPU DVFS research framework with three goals:
+Paper-specific GPU DVFS research code for one workflow:
 
-1. Reproduce published methods (EVEREST, Ali proxy, EAR, Oracle).
-2. Compare methods under one unified experiment protocol.
-3. Iterate quickly on a proposed method.
+1. Reproduce comparison methods and baselines.
+2. Run them under a shared experiment protocol.
+3. Keep the proposed method separate while it is still evolving.
 
-Agent interaction and generation rules are defined in `AGENTS.md`.
+## Current Status
 
-## 1. Architecture Overview
+Implemented:
 
-The repository uses a four-layer separation:
+1. Shared `AlgorithmInterface`, decision types, and validation.
+2. `EnvTelemetryProvider` for dry-runs and unit tests.
+3. Runtime policy registry in `src/methods/registry.py`.
+4. Comparison policies: `max_freq`, `min_freq`, `oracle_static`,
+   `everest`, and `ali_2022_reimpl`.
+5. Long-lived controlled-mode runner in `scripts/run/control_loop.py`.
+6. Unit tests for policies, telemetry, validation, and runner behavior.
 
-1. Method layer: `src/methods/*`
-2. Shared runtime/contracts layer: `src/common/*`
-3. Experiment assets layer: `config`, `scripts`, `analysis`, `artifacts`
-4. External benchmark sources layer: `external/*` (git submodules for external benchmark repositories)
+Still pending:
 
-### Method taxonomy
+1. Hardware-backed telemetry and clock-control adapters.
+2. Import/normalization helpers for external benchmark artifacts.
+3. Frozen processed-result schema under `analysis/schema`.
+4. End-to-end hardware validation on a real benchmark.
 
-1. `system_baselines`: simple controls (`max_freq`, `min_freq`, util policy)
-2. `reimplemented_methods`: paper-method re-implementations (`everest_reimpl`, `ali_reimpl`, `oracle_static`)
-3. `third_party`: wrappers for out-of-process systems (`ear_external`)
-4. `proposed_methods`: your new method (`my_method`)
-
-## 2. Source Tree (Current)
+## Layout
 
 ```text
 src/
-├── common/
-│   ├── experiment/      # shared interfaces/types/decision validation
-│   ├── telemetry/       # hardware metric adapters (vendor-specific implementations)
-│   ├── control/         # clock/power control adapters
-│   ├── power/           # power/energy collection adapters
-│   └── io/              # shared IO helpers for artifacts
-├── methods/
-│   ├── system_baselines/
-│   │   ├── max_freq/
-│   │   ├── min_freq/
-│   │   └── util_policy/
-│   ├── reimplemented_methods/
-│   │   ├── everest_reimpl/      # implemented core stages
-│   │   ├── ali_reimpl/          # placeholder
-│   │   └── oracle_static/       # placeholder
-│   ├── third_party/
-│   │   └── ear_external/        # external-process wrapper skeleton
-│   └── proposed_methods/
-│       └── my_method/
+|-- common/        # shared runtime contracts, types, telemetry interfaces
+`-- methods/       # proposed method plus comparison methods
 
-external/
-└── repacss-benchmarking/  # submodule: benchmark execution adapters
+scripts/run/       # controlled-mode Slurm and local runner entrypoints
+config/            # policy, platform, workload, and experiment config
+tests/             # mirrors src/common, src/methods, and scripts/run owners
+docs/              # architecture, orchestration, and import contracts
+external/          # pinned external benchmark repositories
+analysis/          # future processed schema, notebooks, plots, reports
+artifacts/         # generated run outputs
 ```
 
-## 3. Interfaces
+Research source caches under `src/methods/**/paper/` are local-only and ignored
+by git. The package metadata in `pyproject.toml` discovers only Python packages
+under `src*`; keep PDFs and extracted full text out of tracked package data.
 
-### Online methods (window-level)
+## Method Taxonomy
 
-`src/common/experiment/interfaces.py` defines:
+1. `src/methods/proposed_methods`: the user's own contribution.
+2. `src/methods/comparison_methods/system_baselines`: simple baselines
+   implemented directly here, such as fixed max/min clock policies.
+3. `src/methods/comparison_methods/local_reproductions`: local reproductions
+   maintained in this repo because no directly usable implementation exists, or
+   available code cannot be used unchanged through a thin adapter.
+4. `src/methods/comparison_methods/external_integrations`: adapters for
+   directly usable pinned external implementations.
 
-1. `AlgorithmInterface`
-   - `initialize(context, config) -> AlgorithmState`
-   - `on_window(metrics, state) -> Decision`
-   - `finalize(state) -> FinalSummary`
+Stable runtime names are registry keys, not directory paths:
 
-This is used by:
+```text
+max_freq
+min_freq
+oracle_static
+everest
+ali_2022_reimpl
+```
 
-1. `system_baselines`
-2. `reimplemented_methods/everest_reimpl`
-3. `reimplemented_methods/ali_reimpl`
-4. `proposed_methods/my_method`
+## Quick Start
 
-### External methods (job-level)
-
-`src/common/experiment/interfaces.py` also defines:
-
-1. `ExternalMethodInterface`
-   - `run_external(context, config) -> ExternalRunResult`
-
-This is used by:
-
-1. `third_party/ear_external`
-
-External methods run as separate processes (for example Slurm/EAR commands), then normalize outputs to repository artifacts.
-
-## 4. EVEREST Implementation Boundary
-
-Implemented now:
-
-1. `Phase Identification`
-2. `Phase Characterization`
-3. `Frequency Scaling`
-4. Unit tests for formulas and edge cases
-
-Not implemented yet:
-
-1. EVEREST online `policy` orchestration loop
-2. Hardware telemetry/control integration (DCGM/NVML/ROCm SMI)
-3. End-to-end runner integration with `scripts` and `config`
-
-## 5. External Benchmark Integration
-
-1. Keep external benchmark source in `external/repacss-benchmarking` as a git submodule.
-2. Pin external source by submodule commit (or upstream tag) for reproducibility.
-3. Treat external adapters as the execution layer (site/vendor/runtime specifics).
-4. Treat this repository adapters as the orchestration bridge (algorithm loop, control, artifact import).
-5. For real-time control experiments, submit one top-level `sbatch` from this repository and run benchmark plus algorithm loop in the same allocation.
-6. Do not duplicate benchmark deployment/runtime logic under `src/`; only bridge to external adapters.
-7. Normalize external outputs to the same processed schema used by online methods.
-
-## 6. Quick Start
-
-1. Initialize submodules:
+Requires Python >= 3.10. The code uses runtime union syntax and
+`dataclass(slots=True)`.
 
 ```bash
 git submodule update --init --recursive
-```
-
-2. Install dependencies:
-
-```bash
 python3 -m pip install -r requirements.txt
+python3 -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
-3. Run unit tests:
+For a bounded local runner smoke test, see `scripts/run/README.md`.
 
-```bash
-python3 -m unittest discover -s tests -p "test_*.py"
-```
+## Policy Configs
 
-## 7. Next Priorities
+`scripts/run/control_loop.py` loads policy config from either:
 
-1. Implement EVEREST `policy` in `src/methods/reimplemented_methods/everest_reimpl/policy`.
-2. Implement `oracle_static` and simple baselines (`max_freq`, `min_freq`).
-3. Implement bridge launcher/parser/adapter wiring for external benchmark integration.
-4. Add unified run entry points in `scripts/run` for controlled-mode and external-only runs.
-5. Freeze output schema in `analysis/schema`.
+1. `POLICY_CONFIG_PATH`
+2. `POLICY_CONFIG_JSON`
 
-## 8. Key Docs
+Config schema notes live under `config/algorithms/`. `oracle_static` and
+`ali_2022_reimpl` require policy config for meaningful runs. `everest` can run
+with defaults but accepts runtime hyperparameters.
 
-1. `docs/REPO_ARCHITECTURE.md`: architecture and extension workflow.
-2. `docs/EVEREST_REPRODUCTION_PLAN.md`: EVEREST methodology and staged implementation plan.
-3. `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`: ownership split and runtime model for benchmark-control integration.
+## Documentation Map
+
+Start with `docs/README.md`. The most-used docs are:
+
+1. `docs/REPO_ARCHITECTURE.md`: structure, ownership, and extension rules.
+2. `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`: controlled-mode runtime model.
+3. `docs/EXTERNAL_BENCHMARK_IMPORT_RULES.md`: external artifact import
+   contract.
+4. `src/methods/README.md`: method taxonomy, registry, and add-policy rules.
+5. `config/README.md`: config directory ownership.
+6. `scripts/run/README.md`: Slurm/local runner commands and clock templates.

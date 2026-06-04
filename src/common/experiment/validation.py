@@ -15,6 +15,7 @@ def validate_decision(decision: Decision, platform: PlatformSpec) -> None:
     1. `SET_CLOCK` requires a target clock.
     2. `HOLD_CLOCK` and `NO_OP` must not include a target clock.
     3. Target clock must be within [min, max].
+    4. Intermediate target clocks must align to `graphics_clock_step_mhz`.
     """
     if decision.action == DecisionAction.SET_CLOCK:
         if decision.target_graphics_clock_mhz is None:
@@ -23,8 +24,7 @@ def validate_decision(decision: Decision, platform: PlatformSpec) -> None:
             )
         _validate_clock_range(
             decision.target_graphics_clock_mhz,
-            platform.min_graphics_clock_mhz,
-            platform.max_graphics_clock_mhz,
+            platform,
         )
         return
 
@@ -45,8 +45,22 @@ def validate_decision(decision: Decision, platform: PlatformSpec) -> None:
     raise DecisionValidationError(f"Unsupported decision action: {decision.action}.")
 
 
-def _validate_clock_range(clock_mhz: int, min_mhz: int, max_mhz: int) -> None:
+def _validate_clock_range(clock_mhz: int, platform: PlatformSpec) -> None:
+    min_mhz = platform.min_graphics_clock_mhz
+    max_mhz = platform.max_graphics_clock_mhz
     if not (min_mhz <= clock_mhz <= max_mhz):
         raise DecisionValidationError(
             f"Target clock {clock_mhz} MHz is out of range [{min_mhz}, {max_mhz}] MHz."
+        )
+
+    step_mhz = platform.graphics_clock_step_mhz
+    if step_mhz <= 0:
+        raise DecisionValidationError("graphics_clock_step_mhz must be > 0.")
+
+    if clock_mhz in {min_mhz, max_mhz}:
+        return
+
+    if (clock_mhz - min_mhz) % step_mhz != 0:
+        raise DecisionValidationError(
+            f"Target clock {clock_mhz} MHz is not aligned to {step_mhz} MHz steps."
         )

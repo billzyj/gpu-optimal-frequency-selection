@@ -1,38 +1,51 @@
 # AGENTS.md
 
-This file defines repository-level interaction rules for assistant sessions in this workspace.
+This file defines repository-level interaction rules for assistant sessions in this repository.
 
-## Scope
+## Shared Rules
 
-These rules apply to all assistant conversations and generated outputs for this repository unless the user explicitly overrides them in a specific request.
+### Scope
 
-## Conversation Language Rule
+These rules define the shared baseline for assistant sessions across REPACSS stack projects and paper projects.
 
-1. If the user writes in Chinese, assistant responses may be in Chinese.
-2. If the user writes in English, assistant responses should be in English.
+Each repository must keep its own runtime-visible `AGENTS.md`.
+This file is the canonical runtime source for this repository.
 
-## Generated Content Language Rule (Strict)
+### Conversation Language Rule
 
-All generated repository content must be in English, including:
+1. If the user writes in Chinese, assistant replies may be in Chinese.
+2. If the user writes in English, assistant replies should be in English.
+3. Chinese is allowed for interactive planning and discussion in chat when that helps the user review intermediate work.
 
-1. Code comments and docstrings
-2. Markdown documents (`README`, `docs/*`, reports, notes)
-3. Config descriptions and inline help text
+### Generated Content Language Rule (Strict)
+
+All assistant-generated project content must be in English unless the user explicitly requests non-English file content.
+
+This includes:
+
+1. Source code comments and docstrings
+2. Markdown documents such as `README`, `docs/*`, reports, notes, and analysis drafts
+3. Config descriptions, inline help text, and usage examples
 4. Commit messages created by the assistant
-5. CLI/log text templates written to files
+5. CLI or log text templates written to files
+6. Any other content written into the repository or project workspace for later sharing or reuse
 
-Exception:
+### Repo Material Language Rule
 
-1. Only generate non-English file content when the user explicitly asks for that exact non-English output.
+Anything persisted into the project workspace should default to English if it may be read, shared, reused, reviewed, or versioned later.
 
-## Correction Rule
+Do not write Chinese into repository or project files unless the user explicitly asks for that exact Chinese output.
 
-If any generated file content is accidentally non-English:
+### Correction Rule
+
+If any generated project file content is accidentally non-English:
 
 1. Rewrite it to English immediately in the same session.
-2. Prefer updating existing files rather than creating duplicates.
+2. Prefer updating the existing file rather than creating a duplicate.
 
-## Project Structure Note
+## Repo-Specific Rules
+
+### Project Structure Note
 
 1. `README.md` is for project architecture and usage.
 2. `AGENTS.md` is for assistant interaction and generation rules.

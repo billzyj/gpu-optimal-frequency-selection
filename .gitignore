@@ -206,3 +206,29 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local agent instructions
+/AGENTS.md
+/CLAUDE.md
+
+# Generated experiment outputs
+/artifacts/raw/**
+!/artifacts/raw/.gitkeep
+/artifacts/processed/**
+!/artifacts/processed/.gitkeep
+/artifacts/figures/**
+!/artifacts/figures/.gitkeep
+
+# Top-level ad-hoc result/output directories
+/result/
+/results/
+/runs/
+/outputs/
+/logs/
+
+# Generated analysis reports
+/analysis/reports/**
+!/analysis/reports/.gitkeep
+
+# Co-located source-paper caches for local reproduction methods
+/src/methods/comparison_methods/local_reproductions/*/paper/

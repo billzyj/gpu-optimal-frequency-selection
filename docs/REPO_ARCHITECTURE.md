@@ -2,61 +2,133 @@
 
 ## 1. Objectives
 
-This repository supports three workflows in one framework:
+This repository is a paper-specific GPU DVFS research codebase. It supports
+three workflows in one structure:
 
-1. Reproduce reference GPU DVFS methods (EVEREST, Ali proxy, EAR, Oracle).
-2. Compare all methods under a shared protocol and schema.
-3. Develop and evaluate a proposed method quickly.
+1. Reproduce reference GPU DVFS methods and baselines.
+2. Compare all methods under a shared runtime protocol and artifact schema.
+3. Develop and evaluate a proposed method without contaminating reproduced
+   baselines.
 
-## 2. Layering
+## 2. Current Architecture Assessment
+
+The current architecture is sound for a research prototype and is ready for the
+next hardware-integration step. The strongest choices are:
+
+1. A single `AlgorithmInterface` shared by baselines, local reproductions, and
+   proposed methods.
+2. A stable policy registry used by the runner instead of ad-hoc imports in
+   scripts.
+3. A long-lived controlled-mode runner that preserves in-memory policy state
+   and calls `finalize()` once per run.
+4. Co-located reproduction plans and source ledgers for paper-faithful methods.
+5. A clear boundary between local algorithm orchestration and the external
+   benchmark repository.
+
+The main architecture risks are not structural; they are unfinished integration
+surfaces:
+
+1. `src/common/telemetry` only has an environment-variable provider today.
+2. `src/common/control`, `src/common/power`, `src/common/io`, and
+   `src/common/cli` are placeholders.
+3. External benchmark artifact import/normalization is specified but not
+   implemented.
+4. `analysis/schema` is not yet frozen, so downstream result consumers should
+   treat artifact layouts as provisional.
+
+## 3. Layering
 
 1. Method layer: `src/methods`
 2. Shared runtime/contracts: `src/common`
 3. Experiment assets: `config`, `scripts`, `analysis`, `artifacts`
-4. External benchmark sources: `external` (git submodules, e.g., `repacss-benchmarking`)
+4. External benchmark sources: `external` (git submodules, currently
+   `repacss-benchmarking`)
 
-## 3. Method Taxonomy
+Layering rule: policy-specific heuristics live in `src/methods`, not in
+`src/common`. Site/vendor/benchmark execution details live in the external
+benchmark repository, not under `src/methods`.
+
+## 4. Method Taxonomy
 
 ```text
 src/methods/
-├── system_baselines/
-│   ├── max_freq/
-│   ├── min_freq/
-│   └── util_policy/
-├── reimplemented_methods/
-│   ├── everest_reimpl/
-│   ├── ali_reimpl/
-│   └── oracle_static/
-├── third_party/
-│   └── ear_external/
-└── proposed_methods/
-    └── my_method/
+|-- registry.py
+|-- proposed_methods/
+|   |-- templates/
+|   `-- my_method/
+`-- comparison_methods/
+    |-- system_baselines/
+    |   |-- fixed_clock.py
+    |   |-- max_freq/
+    |   |-- min_freq/
+    |   `-- util_policy/        # placeholder, not registered yet
+    |-- local_reproductions/
+    |   |-- everest_reimpl/
+    |   |   |-- docs/
+    |   |   |-- paper/          # ignored local source cache
+    |   |   |-- phase_identification/
+    |   |   |-- phase_characterization/
+    |   |   |-- frequency_scaling/
+    |   |   `-- policy.py
+    |   |-- ali_2022_reimpl/
+    |   |   |-- docs/
+    |   |   |-- paper/          # ignored local source cache
+    |   |   `-- policy.py
+    |   `-- oracle_static/
+    |       |-- docs/
+    |       |-- paper/          # ignored local source cache
+    |       `-- policy.py
+    `-- external_integrations/
 ```
 
-### 3.1 `system_baselines`
+### 4.1 `proposed_methods`
+
+Your new method for paper contributions. Proposed methods may improve on
+EVeREST, Ali, or the baselines, but improvements should not be backported into
+comparison-method baselines unless the baseline scope is explicitly changed.
+
+### 4.2 `comparison_methods/system_baselines`
 
 Simple controls with low implementation cost and high interpretability.
+Currently registered policies:
 
-### 3.2 `reimplemented_methods`
+1. `max_freq`
+2. `min_freq`
 
-Reference methods from papers/systems, re-implemented in this repository.
+`util_policy` is a placeholder and should not be reported as an implemented
+baseline until it has a policy implementation, tests, and registry entry.
 
-### 3.3 `third_party`
+### 4.3 `comparison_methods/local_reproductions`
 
-Method wrappers for systems that run outside Python runtime (e.g., EAR in C/runtime stack).
+Comparison algorithms implemented and maintained locally in this repository.
+Use this category when no directly usable implementation exists, or when an
+available implementation cannot be used unchanged behind a thin adapter. Paper
+sources and method-specific reproduction notes live inside the corresponding
+method directory, not in a top-level reference cache.
 
-### 3.4 `proposed_methods`
+Current registered policies:
 
-Your new method for paper contributions.
+1. `everest`
+2. `ali_2022_reimpl`
+3. `oracle_static`
 
-### 3.5 `external/*` submodules
+### 4.4 `comparison_methods/external_integrations`
 
-External repositories own benchmark runtime and site/vendor adapter logic.
-This repository must consume them through bridge interfaces instead of copying their execution internals.
+Directly usable existing implementations should be pinned under
+`external/<repo>` and exposed through local adapters in this directory. The
+adapter may launch, import, or parse the external implementation, but the runner
+and other methods should not import third-party code directly.
 
-## 4. Contracts
+### 4.5 `external/*` Submodules
 
-## 4.1 Online methods (`AlgorithmInterface`)
+External repositories own benchmark runtime, site/vendor adapter logic, or
+third-party method source. This repository consumes them through top-level
+orchestration, future import helpers, or local external-method adapters instead
+of copying execution internals into core policy code.
+
+## 5. Contracts
+
+### 5.1 Online Methods (`AlgorithmInterface`)
 
 Defined in `src/common/experiment/interfaces.py`:
 
@@ -66,57 +138,127 @@ Defined in `src/common/experiment/interfaces.py`:
 
 Applies to:
 
-1. `system_baselines`
-2. `reimplemented_methods` methods that run online in Python
-3. `proposed_methods`
+1. Fixed-clock baselines.
+2. Local reproductions that run online or apply a whole-run decision through the
+   runner.
+3. Proposed methods.
 
-## 4.2 External methods (`ExternalMethodInterface`)
+### 5.2 Runtime Registry
 
-Defined in `src/common/experiment/interfaces.py`:
+`src/methods/registry.py` is the only default runner registry. Add a policy
+there only after the policy:
 
-1. `run_external(context, config) -> ExternalRunResult`
+1. Implements the `AlgorithmInterface` lifecycle.
+2. Emits decisions accepted by `validate_decision()`.
+3. Has at least one unit test for initialization and one decision path.
+4. Has a README or reproduction note explaining config inputs and scope.
 
-Applies to:
+Current supported `POLICY_NAME` values:
 
-1. `src/methods/third_party/*` bridge modules
+1. `max_freq`
+2. `min_freq`
+3. `oracle_static`
+4. `everest`
+5. `ali_2022_reimpl`
 
-External methods are job-level executions and must normalize outputs into repository artifact schema.
+## 6. Shared Modules (`src/common`)
 
-## 5. Shared Modules (`src/common`)
-
-1. `experiment`: common contracts, types, validation.
-2. `telemetry`: vendor-specific metric adapters under a unified API.
-3. `control`: clock/power actuation adapters.
-4. `power`: power/energy collection adapters.
-5. `io`: schema-safe artifact read/write helpers.
+1. `experiment`: implemented contracts, types, and decision validation.
+2. `telemetry`: implemented `WindowTelemetryProvider` protocol and
+   `EnvTelemetryProvider`; hardware providers are pending.
+3. `control`: placeholder for future clock/power actuation adapters.
+4. `power`: placeholder for future power/energy collection helpers.
+5. `io`: placeholder for future schema-safe artifact read/write helpers.
+6. `cli`: placeholder for future shared command-line helpers.
 
 Rule: no method-specific heuristics in `src/common`.
 
-## 6. Data Conventions
+## 7. Runtime Flow
 
-1. `artifacts/raw`: raw logs, vendor outputs, and trace snapshots.
-2. `artifacts/processed`: normalized run/window tables.
+Controlled mode is the primary runtime model:
+
+1. `scripts/run/controlled_mode.sbatch` submits one top-level Slurm job from
+   this repository.
+2. The external benchmark adapter runs as a child process in the same
+   allocation.
+3. `scripts/run/control_loop.py` runs once, watches `BENCH_PID`, keeps policy
+   state in memory, and loops until the benchmark exits or a stop condition is
+   reached.
+4. `scripts/run/control_runtime.py` owns shared helpers for environment parsing,
+   manifests, decision logs, state snapshots, and clock-command application.
+5. `scripts/run/control_hook.py` remains as a legacy single-window hook.
+
+The primary controlled-mode artifact directory is:
+
+```text
+<RUN_DIR>/control/
+|-- run_manifest.json
+|-- policy_state.json
+|-- decisions.csv
+|-- last_decision.json
+`-- final_summary.json
+```
+
+## 8. Test Layout
+
+Tests mirror the owner directory, not only `src`:
+
+```text
+tests/
+|-- common/
+|   |-- experiment/        # src/common/experiment
+|   `-- telemetry/         # src/common/telemetry
+|-- methods/
+|   |-- proposed_methods/  # src/methods/proposed_methods
+|   `-- comparison_methods/
+|       |-- system_baselines/
+|       |-- local_reproductions/
+|       `-- external_integrations/
+`-- scripts/
+    `-- run/               # scripts/run
+```
+
+`tests/common/*` covers shared runtime contracts and telemetry providers.
+`tests/scripts/run/*` covers executable orchestration code. Method tests stay
+under `tests/methods/...` and should match the method category used under
+`src/methods/...`.
+
+## 9. Data Conventions
+
+1. `artifacts/raw`: raw logs, external benchmark outputs, Slurm logs, and trace
+   snapshots.
+2. `artifacts/processed`: normalized run/window tables after import and
+   validation.
 3. `artifacts/figures`: generated plots.
 
-All methods (online and external) must produce comparable processed outputs.
+All policies and imported benchmark runs should eventually produce comparable
+processed outputs. Until `analysis/schema` is frozen, treat processed schema as
+provisional and record schema assumptions in each analysis script or notebook.
 
-## 7. Recommended Expansion Order
+## 10. Recommended Expansion Order
 
-1. Implement EVEREST `policy` loop.
-2. Implement `oracle_static` and simple baselines.
-3. Complete benchmark bridge launcher/parser/adapter for external submodules.
-4. Build unified runners in `scripts/run` for controlled mode and external-only mode.
-5. Freeze analysis schema and add integration tests.
+1. Add a hardware telemetry provider behind `WindowTelemetryProvider`.
+2. Add typed clock-control adapters and keep shell command templates as a
+   transitional path.
+3. Validate `POLICY_NAME=everest` with one real controlled benchmark.
+4. Add import/validation helpers for `external/repacss-benchmarking` artifacts.
+5. Freeze analysis schema and add integration tests for controlled and
+   import-only runs.
+6. Add the proposed method only after baseline artifact contracts are stable.
 
-## 8. Orchestration Boundary
+## 11. Orchestration Boundary
 
 For online control experiments:
 
 1. Submit one top-level `sbatch` job from this repository.
 2. Run algorithm control loop and benchmark process in the same allocation.
 3. Use external repository adapters for benchmark execution details only.
-4. Do not rely on nested independent job submission from bridge code.
+4. Do not rely on nested independent job submission from local orchestration
+   code.
 
-Reference:
+References:
 
 1. `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`
+2. `docs/EXTERNAL_BENCHMARK_IMPORT_RULES.md`
+3. `src/methods/comparison_methods/README.md`
+4. `scripts/run/README.md`
