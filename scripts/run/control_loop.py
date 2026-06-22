@@ -30,9 +30,11 @@ if str(REPO_ROOT) not in sys.path:
 from src.common.experiment import (
     AlgorithmInterface,
     AlgorithmState,
+    Decision,
     ExperimentContext,
     FinalSummary,
     MetricWindow,
+    StaticPolicy,
     validate_decision,
 )
 from src.methods.registry import resolve_policy
@@ -55,6 +57,15 @@ from scripts.run.control_runtime import (
 
 class ControlLoopAbortError(RuntimeError):
     """Raised after finalization when the control loop aborts early."""
+
+
+# Supported values for the ``CONTROL_PHASE`` environment variable:
+#   all    - apply the pre-run decision (StaticPolicy only) then run the loop.
+#   prerun - apply the pre-run decision only, then exit (set clock before the
+#            benchmark process starts).
+#   loop   - run the windowed loop only; the pre-run decision was already
+#            applied by an earlier ``prerun`` phase in the same job.
+_CONTROL_PHASES = frozenset({"all", "prerun", "loop"})
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +97,53 @@ def _should_stop(
     return False
 
 
+def _get_initial_decision(
+    policy: AlgorithmInterface,
+    context: ExperimentContext,
+    state: AlgorithmState,
+) -> Decision | None:
+    """Returns a pre-window decision for :class:`StaticPolicy` policies, else ``None``.
+
+    Support is detected structurally: online policies that do not implement
+    ``initial_decision`` are not :class:`StaticPolicy` instances and are skipped.
+    """
+    if not isinstance(policy, StaticPolicy):
+        return None
+    return policy.initial_decision(context, state)
+
+
+def _apply_initial_decision_if_present(
+    *,
+    policy: AlgorithmInterface,
+    context: ExperimentContext,
+    state: AlgorithmState,
+    control_log: Path,
+    decisions_csv: Path,
+    state_path: Path,
+    decision_path: Path,
+) -> None:
+    """Applies a policy's optional run-level decision before window 0."""
+    decision = _get_initial_decision(policy, context, state)
+    if decision is None:
+        return
+
+    policy_name = context.metadata.policy_name
+    validate_decision(decision, context.platform)
+    apply_decision(decision, control_log)
+    persist_state(state_path, state)
+    append_decision_row(decisions_csv, policy_name, decision, window_index=-1)
+    write_last_decision(decision_path, policy_name, window_index=-1, decision=decision)
+    append_log(
+        control_log,
+        (
+            f"initial_decision policy={policy_name} "
+            f"decision={decision.action.value} "
+            f"target={decision.target_graphics_clock_mhz} "
+            f"reason={decision.reason_code}"
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -109,6 +167,7 @@ def run_control_loop(
     window_builder: Callable[[ExperimentContext, int], MetricWindow] = build_window,
     sleep_fn: Callable[[float], Any] = time.sleep,
     raise_on_abort: bool = False,
+    apply_initial_decision: bool = True,
 ) -> FinalSummary:
     """Runs the DVFS control loop until a stop condition is met.
 
@@ -154,6 +213,11 @@ def run_control_loop(
         ``final_summary.json`` if the loop aborted because of repeated
         per-window failures.  CLI callers use this to return a non-zero exit
         code without losing final artifacts.
+    apply_initial_decision:
+        When true, apply a :class:`StaticPolicy`'s
+        ``initial_decision(context, state)`` before building telemetry window 0.
+        Driven by ``CONTROL_PHASE``: true for ``all``, false for ``loop`` (where
+        an earlier ``prerun`` phase already applied the prelaunch decision).
 
     Returns
     -------
@@ -167,6 +231,16 @@ def run_control_loop(
     persist_state(state_path, state)
     write_run_manifest(run_dir / "control" / "run_manifest.json", context, policy_config)
     append_log(control_log, f"control_loop started: policy={policy_name}")
+    if apply_initial_decision:
+        _apply_initial_decision_if_present(
+            policy=policy,
+            context=context,
+            state=state,
+            control_log=control_log,
+            decisions_csv=decisions_csv,
+            state_path=state_path,
+            decision_path=decision_path,
+        )
 
     window_index: int = 0
     consecutive_failures: int = 0
@@ -263,6 +337,40 @@ def run_control_loop(
     return summary
 
 
+def run_initial_decision_only(
+    *,
+    policy: AlgorithmInterface,
+    context: ExperimentContext,
+    policy_config: Mapping[str, object],
+    run_dir: Path,
+    control_log: Path,
+    decisions_csv: Path,
+    state_path: Path,
+    decision_path: Path,
+) -> None:
+    """Initializes a policy and applies only its optional pre-window decision."""
+    state: AlgorithmState = policy.initialize(context, policy_config)
+    persist_state(state_path, state)
+    write_run_manifest(run_dir / "control" / "run_manifest.json", context, policy_config)
+    append_log(
+        control_log,
+        f"initial_decision_only started: policy={context.metadata.policy_name}",
+    )
+    _apply_initial_decision_if_present(
+        policy=policy,
+        context=context,
+        state=state,
+        control_log=control_log,
+        decisions_csv=decisions_csv,
+        state_path=state_path,
+        decision_path=decision_path,
+    )
+    append_log(
+        control_log,
+        f"initial_decision_only finished: policy={context.metadata.policy_name}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -296,6 +404,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 (argv reserved f
         Path to the append-only control log.
     CONTROL_WINDOW_SECONDS (default: ``5.0``)
         Nominal window duration in seconds.
+    CONTROL_PHASE (default: ``all``)
+        Run phase. ``all`` applies the pre-run decision (for static policies)
+        then runs the windowed loop. ``prerun`` applies only the pre-run
+        decision and exits, so the clock is set before the benchmark starts;
+        it does not require ``BENCH_PID``/``MAX_WINDOWS``. ``loop`` runs only
+        the windowed loop and skips the pre-run decision because an earlier
+        ``prerun`` phase already applied it.
 
     Policy config is loaded from ``POLICY_CONFIG_PATH`` or
     ``POLICY_CONFIG_JSON`` (same as ``control_hook.py``).
@@ -318,14 +433,23 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 (argv reserved f
         print("BENCH_ID is required for control loop.", file=sys.stderr)
         return 2
 
-    # Resolve optional bounds — at least one must be provided.
+    phase = os.getenv("CONTROL_PHASE", "all").strip().lower()
+    if phase not in _CONTROL_PHASES:
+        supported = ", ".join(sorted(_CONTROL_PHASES))
+        print(
+            f"Unsupported CONTROL_PHASE={phase!r}. Supported values: {supported}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Resolve optional bounds — at least one must be provided for the windowed loop.
     bench_pid_raw = os.getenv("BENCH_PID", "")
     max_windows_raw = os.getenv("MAX_WINDOWS", "")
 
     bench_pid: int | None = int(bench_pid_raw) if bench_pid_raw else None
     max_windows: int | None = int(max_windows_raw) if max_windows_raw else None
 
-    if bench_pid is None and max_windows is None:
+    if phase != "prerun" and bench_pid is None and max_windows is None:
         print(
             "Either BENCH_PID or MAX_WINDOWS must be set to bound the control loop.",
             file=sys.stderr,
@@ -353,6 +477,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 (argv reserved f
         context = build_context(policy_name, bench_id, run_id, started_at_utc)
         window_seconds = parse_float_env("CONTROL_WINDOW_SECONDS", 5.0)
 
+        if phase == "prerun":
+            run_initial_decision_only(
+                policy=policy,
+                context=context,
+                policy_config=policy_config,
+                run_dir=run_dir,
+                control_log=control_log,
+                decisions_csv=decisions_csv,
+                state_path=state_path,
+                decision_path=decision_path,
+            )
+            return 0
+
         run_control_loop(
             policy=policy,
             context=context,
@@ -368,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 (argv reserved f
             stop_file=stop_file,
             max_consecutive_failures=max_consecutive_failures,
             raise_on_abort=True,
+            apply_initial_decision=phase == "all",
         )
         return 0
 

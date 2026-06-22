@@ -8,15 +8,23 @@ stays in dry-run mode and writes no real clock commands.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
+from scripts.run import control_loop
 from scripts.run.control_loop import ControlLoopAbortError, run_control_loop
 from scripts.run.control_runtime import build_window
 from src.common.experiment.types import (
+    AlgorithmState,
+    Decision,
+    DecisionAction,
     ExperimentContext,
     ExperimentMetadata,
+    FinalSummary,
+    MetricWindow,
     PlatformSpec,
 )
 from src.methods.registry import resolve_policy
@@ -126,6 +134,191 @@ class TestControlLoopStatePersistsAcrossWindows(unittest.TestCase):
             self.assertEqual(manifest["run"]["policy_name"], "max_freq")
             self.assertIn("policy_config_sha256", manifest)
             self.assertIn("repository", manifest)
+
+
+class TestControlLoopInitialDecision(unittest.TestCase):
+    """Offline policies can apply a whole-workload clock before window 0."""
+
+    def test_initial_decision_is_applied_before_first_window(self) -> None:
+        context = _make_context()
+
+        class OfflinePolicy:
+            policy_name = "offline_test"
+
+            def initialize(self, ctx: ExperimentContext, config: object) -> AlgorithmState:
+                state = AlgorithmState()
+                state.set("run_id", ctx.metadata.run_id)
+                state.set("total_windows", 0)
+                return state
+
+            def initial_decision(
+                self,
+                ctx: ExperimentContext,
+                state: AlgorithmState,
+            ) -> Decision:
+                return Decision(
+                    action=DecisionAction.SET_CLOCK,
+                    target_graphics_clock_mhz=900,
+                    reason_code="offline_apply_before_window_0",
+                )
+
+            def on_window(self, metrics: MetricWindow, state: AlgorithmState) -> Decision:
+                state.set("total_windows", int(state.get("total_windows", 0)) + 1)
+                return Decision(
+                    action=DecisionAction.HOLD_CLOCK,
+                    target_graphics_clock_mhz=None,
+                    reason_code="offline_hold",
+                )
+
+            def finalize(self, state: AlgorithmState) -> FinalSummary:
+                return FinalSummary(
+                    policy_name=self.policy_name,
+                    run_id=str(state.get("run_id")),
+                    total_windows=int(state.get("total_windows", 0)),
+                    pd_target=0.05,
+                    pd_violation_count=0,
+                    max_pd_violation=0.0,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            paths = _make_paths(run_dir)
+
+            def _window_builder(ctx: ExperimentContext, window_index: int):
+                log_text = paths["control_log"].read_text(encoding="utf-8")
+                self.assertIn("initial_decision", log_text)
+                self.assertIn("offline_apply_before_window_0", log_text)
+                return build_window(ctx, window_index)
+
+            summary = run_control_loop(
+                policy=OfflinePolicy(),
+                context=context,
+                policy_config={},
+                run_dir=run_dir,
+                control_log=paths["control_log"],
+                decisions_csv=paths["decisions_csv"],
+                state_path=paths["state_path"],
+                decision_path=paths["decision_path"],
+                window_seconds=5.0,
+                max_windows=1,
+                sleep_fn=lambda _seconds: None,
+                window_builder=_window_builder,
+            )
+
+            self.assertEqual(summary.total_windows, 1)
+            rows = paths["decisions_csv"].read_text(encoding="utf-8").splitlines()
+            self.assertIn("offline_apply_before_window_0;window=-1", rows[1])
+
+    def test_initial_decision_can_be_skipped_after_prelaunch_application(self) -> None:
+        context = _make_context()
+
+        class OfflinePolicy:
+            policy_name = "offline_test"
+
+            def initialize(self, ctx: ExperimentContext, config: object) -> AlgorithmState:
+                state = AlgorithmState()
+                state.set("run_id", ctx.metadata.run_id)
+                state.set("total_windows", 0)
+                return state
+
+            def initial_decision(
+                self,
+                ctx: ExperimentContext,
+                state: AlgorithmState,
+            ) -> Decision:
+                raise AssertionError("initial_decision should be skipped")
+
+            def on_window(self, metrics: MetricWindow, state: AlgorithmState) -> Decision:
+                state.set("total_windows", int(state.get("total_windows", 0)) + 1)
+                return Decision(
+                    action=DecisionAction.HOLD_CLOCK,
+                    target_graphics_clock_mhz=None,
+                    reason_code="offline_hold_after_prelaunch",
+                )
+
+            def finalize(self, state: AlgorithmState) -> FinalSummary:
+                return FinalSummary(
+                    policy_name=self.policy_name,
+                    run_id=str(state.get("run_id")),
+                    total_windows=int(state.get("total_windows", 0)),
+                    pd_target=0.05,
+                    pd_violation_count=0,
+                    max_pd_violation=0.0,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            paths = _make_paths(run_dir)
+
+            summary = run_control_loop(
+                policy=OfflinePolicy(),
+                context=context,
+                policy_config={},
+                run_dir=run_dir,
+                control_log=paths["control_log"],
+                decisions_csv=paths["decisions_csv"],
+                state_path=paths["state_path"],
+                decision_path=paths["decision_path"],
+                window_seconds=5.0,
+                max_windows=1,
+                sleep_fn=lambda _seconds: None,
+                window_builder=build_window,
+                apply_initial_decision=False,
+            )
+
+            self.assertEqual(summary.total_windows, 1)
+            rows = paths["decisions_csv"].read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(rows), 2)
+            self.assertIn("offline_hold_after_prelaunch;window=0", rows[1])
+
+    def test_prerun_phase_does_not_require_loop_bound(self) -> None:
+        class OfflinePolicy:
+            policy_name = "offline_test"
+
+            def initialize(self, ctx: ExperimentContext, config: object) -> AlgorithmState:
+                state = AlgorithmState()
+                state.set("run_id", ctx.metadata.run_id)
+                return state
+
+            def initial_decision(
+                self,
+                ctx: ExperimentContext,
+                state: AlgorithmState,
+            ) -> Decision:
+                return Decision(
+                    action=DecisionAction.SET_CLOCK,
+                    target_graphics_clock_mhz=900,
+                    reason_code="offline_prelaunch_apply",
+                )
+
+            def on_window(self, metrics: MetricWindow, state: AlgorithmState) -> Decision:
+                raise AssertionError("initial-only mode must not process windows")
+
+            def finalize(self, state: AlgorithmState) -> FinalSummary:
+                raise AssertionError("initial-only mode must not finalize a run")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "RUN_DIR": str(run_dir),
+                    "BENCH_ID": "synthetic",
+                    "POLICY_NAME": "offline_test",
+                    "CONTROL_PHASE": "prerun",
+                },
+                clear=True,
+            ), mock.patch(
+                "scripts.run.control_loop.resolve_policy",
+                return_value=OfflinePolicy(),
+            ):
+                rc = control_loop.main([])
+
+            self.assertEqual(rc, 0)
+            log_text = (run_dir / "control_loop.log").read_text(encoding="utf-8")
+            self.assertIn("initial_decision", log_text)
+            self.assertIn("offline_prelaunch_apply", log_text)
+            self.assertFalse((run_dir / "control" / "final_summary.json").exists())
 
 
 class TestControlLoopSingleWindowFailureIsTolerated(unittest.TestCase):

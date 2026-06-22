@@ -16,6 +16,7 @@ class FrequencyScaler:
         pd: float,
         platform: PlatformSpec,
         min_ratio_of_max: float = 0.55,
+        min_frequency_mhz: int = 900,
     ) -> ScalerOutput:
         if freq_high_mhz <= 0:
             raise ValueError("freq_high_mhz must be > 0.")
@@ -26,7 +27,8 @@ class FrequencyScaler:
         pd_used = _clamp(pd, 0.0, 0.99)
 
         max_allowed_mhz = min(platform.max_graphics_clock_mhz, freq_high_mhz)
-        min_floor_mhz = int(math.ceil(min_ratio_of_max * platform.max_graphics_clock_mhz))
+        ratio_floor_mhz = int(math.ceil(min_ratio_of_max * platform.max_graphics_clock_mhz))
+        min_floor_mhz = max(ratio_floor_mhz, int(min_frequency_mhz))
         min_allowed_mhz = max(platform.min_graphics_clock_mhz, min_floor_mhz)
         if min_allowed_mhz > max_allowed_mhz:
             min_allowed_mhz = max_allowed_mhz

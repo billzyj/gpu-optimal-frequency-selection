@@ -18,6 +18,9 @@ from src.methods.comparison_methods.local_reproductions.everest_reimpl.phase_ide
 from src.methods.comparison_methods.local_reproductions.everest_reimpl.types import CharacterizationRecord
 
 
+_DEFAULT_MIN_FREQUENCY_MHZ = 900
+
+
 class EverestPolicy:
     """Online EVeREST-like runtime policy built from the three reimplemented stages.
 
@@ -77,10 +80,22 @@ class EverestPolicy:
             )
 
         min_ratio_of_max = _config_float(config, "min_ratio_of_max", 0.55)
+        min_frequency_mhz = max(_config_int(config, "min_frequency_mhz", _DEFAULT_MIN_FREQUENCY_MHZ), 0)
+        clock_match_tolerance_mhz = max(
+            _config_float(
+                config,
+                "clock_match_tolerance_mhz",
+                context.platform.graphics_clock_step_mhz / 2.0,
+            ),
+            0.5,
+        )
         low_ratio = _config_float(config, "characterization_low_frequency_ratio", 0.70)
         low_frequency_default = int(round(float(f_high) * low_ratio))
         f_low = _config_int(config, "characterization_low_frequency_mhz", low_frequency_default)
-        f_low_floor = int(round(context.platform.max_graphics_clock_mhz * min_ratio_of_max))
+        f_low_floor = max(
+            int(round(context.platform.max_graphics_clock_mhz * min_ratio_of_max)),
+            min_frequency_mhz,
+        )
         f_low = _quantize_clock_up(
             max(f_low, f_low_floor),
             min_clock_mhz=context.platform.min_graphics_clock_mhz,
@@ -88,12 +103,14 @@ class EverestPolicy:
             step_mhz=context.platform.graphics_clock_step_mhz,
         )
         if f_low >= f_high and f_high > context.platform.min_graphics_clock_mhz:
-            f_low = _quantize_clock_down(
+            lower_candidate = _quantize_clock_down(
                 f_high - context.platform.graphics_clock_step_mhz,
                 min_clock_mhz=context.platform.min_graphics_clock_mhz,
                 max_clock_mhz=f_high,
                 step_mhz=context.platform.graphics_clock_step_mhz,
             )
+            if lower_candidate >= f_low_floor:
+                f_low = lower_candidate
 
         state = AlgorithmState()
         state.set("run_id", context.metadata.run_id)
@@ -101,8 +118,12 @@ class EverestPolicy:
         state.set("phase_window_seconds", phase_window_seconds)
         state.set("change_threshold_pct", change_threshold_pct)
         state.set("min_ratio_of_max", min_ratio_of_max)
+        state.set("min_frequency_mhz", min_frequency_mhz)
+        state.set("clock_match_tolerance_mhz", clock_match_tolerance_mhz)
         state.set("f_high_mhz", f_high)
         state.set("f_low_mhz", f_low)
+        state.set("idle_gpu_threshold_pct", idle_gpu_threshold_pct)
+        state.set("idle_mem_threshold_pct", idle_mem_threshold_pct)
         state.set("platform_vendor", context.platform.vendor)
         state.set("platform_gpu_model", context.platform.gpu_model)
         state.set("platform_gpu_count", context.platform.gpu_count)
@@ -170,43 +191,30 @@ class EverestPolicy:
 
         state.set("cache_miss_count", int(state.get("cache_miss_count", 0)) + 1)
         if int(state.get("f_low_mhz")) >= int(state.get("f_high_mhz")):
-            record = self._cache_default_record(
-                state=state,
-                phase_id=observation.phase_id,
-                mem_high=max(observation.mem_util_avg_pct, 0.0),
-                mem_low=max(observation.mem_util_avg_pct, 0.0),
-                fs=0.0,
-            )
-            return self._scaled_decision(
+            return self._high_frequency_decision(
                 metrics=metrics,
                 state=state,
-                record=record,
-                reason="everest_apply_without_low_frequency_probe",
+                reason="everest_wait_for_characterizable_phase",
             )
 
         if observation.mem_util_avg_pct <= 0:
-            record = self._cache_default_record(
-                state=state,
-                phase_id=observation.phase_id,
-                mem_high=max(observation.mem_util_avg_pct, 0.0),
-                mem_low=max(observation.mem_util_avg_pct, 0.0),
-                fs=0.0,
-            )
-            return self._scaled_decision(
+            return self._high_frequency_decision(
                 metrics=metrics,
                 state=state,
-                record=record,
-                reason="everest_apply_zero_mem_phase",
+                reason="everest_wait_for_characterizable_phase",
             )
 
         f_high = int(state.get("f_high_mhz"))
         f_low = int(state.get("f_low_mhz"))
-        if not _is_same_clock(metrics.graphics_clock_avg_mhz, f_high):
+        if not _is_same_clock(metrics.graphics_clock_avg_mhz, f_high, _clock_match_tolerance_mhz(state)):
             pending_characterization = {
                 "stage": "capture_high",
                 "phase_id": observation.phase_id,
                 "freq_high_mhz": f_high,
                 "freq_low_mhz": f_low,
+                "phase_gpu_util_avg_pct": observation.gpu_util_avg_pct,
+                "phase_mem_util_avg_pct": observation.mem_util_avg_pct,
+                "phase_is_idle_like": observation.is_idle_like,
             }
             state.set("pending_characterization", pending_characterization)
             return self._set_clock_decision(
@@ -222,6 +230,9 @@ class EverestPolicy:
             state=state,
             phase_id=observation.phase_id,
             mem_high=observation.mem_util_avg_pct,
+            phase_gpu_util_avg_pct=observation.gpu_util_avg_pct,
+            phase_mem_util_avg_pct=observation.mem_util_avg_pct,
+            phase_is_idle_like=observation.is_idle_like,
             freq_high_mhz=f_high,
             freq_low_mhz=f_low,
             reason="everest_characterize_low_frequency",
@@ -257,6 +268,9 @@ class EverestPolicy:
         state: AlgorithmState,
         phase_id: str,
         mem_high: float,
+        phase_gpu_util_avg_pct: float,
+        phase_mem_util_avg_pct: float,
+        phase_is_idle_like: bool,
         freq_high_mhz: int,
         freq_low_mhz: int,
         reason: str,
@@ -265,6 +279,9 @@ class EverestPolicy:
             "stage": "capture_low",
             "phase_id": phase_id,
             "mem_high": mem_high,
+            "phase_gpu_util_avg_pct": phase_gpu_util_avg_pct,
+            "phase_mem_util_avg_pct": phase_mem_util_avg_pct,
+            "phase_is_idle_like": phase_is_idle_like,
             "freq_high_mhz": freq_high_mhz,
             "freq_low_mhz": freq_low_mhz,
         }
@@ -283,12 +300,47 @@ class EverestPolicy:
         state: AlgorithmState,
         pending: dict[str, object],
     ) -> Decision:
+        freq_high_mhz = int(pending["freq_high_mhz"])
+        if not _is_same_clock(metrics.graphics_clock_avg_mhz, freq_high_mhz, _clock_match_tolerance_mhz(state)):
+            state.set("pending_characterization", None)
+            return self._high_frequency_decision(
+                metrics=metrics,
+                state=state,
+                reason="everest_defer_characterization_clock_mismatch",
+                debug_fields=_characterization_debug(
+                    pending,
+                    observed_clock_mhz=metrics.graphics_clock_avg_mhz,
+                    expected_clock_mhz=freq_high_mhz,
+                ),
+            )
+
+        if not _matches_characterization_phase(metrics, pending, state, include_mem=True):
+            state.set("pending_characterization", None)
+            return self._high_frequency_decision(
+                metrics=metrics,
+                state=state,
+                reason="everest_defer_characterization_phase_drift",
+                debug_fields=_characterization_debug(pending),
+            )
+
+        if metrics.mem_util_avg_pct <= 0:
+            state.set("pending_characterization", None)
+            return self._high_frequency_decision(
+                metrics=metrics,
+                state=state,
+                reason="everest_wait_for_characterizable_phase",
+                debug_fields=_characterization_debug(pending),
+            )
+
         return self._start_low_frequency_probe(
             metrics=metrics,
             state=state,
             phase_id=str(pending["phase_id"]),
             mem_high=metrics.mem_util_avg_pct,
-            freq_high_mhz=int(pending["freq_high_mhz"]),
+            phase_gpu_util_avg_pct=metrics.gpu_util_avg_pct,
+            phase_mem_util_avg_pct=metrics.mem_util_avg_pct,
+            phase_is_idle_like=_is_idle_like_window(metrics, state),
+            freq_high_mhz=freq_high_mhz,
             freq_low_mhz=int(pending["freq_low_mhz"]),
             reason="everest_characterize_low_frequency",
         )
@@ -306,30 +358,49 @@ class EverestPolicy:
         mem_low = metrics.mem_util_avg_pct
         state.set("pending_characterization", None)
 
+        if not _is_same_clock(metrics.graphics_clock_avg_mhz, freq_low_mhz, _clock_match_tolerance_mhz(state)):
+            return self._high_frequency_decision(
+                metrics=metrics,
+                state=state,
+                reason="everest_defer_characterization_clock_mismatch",
+                debug_fields=_characterization_debug(
+                    pending,
+                    observed_clock_mhz=metrics.graphics_clock_avg_mhz,
+                    expected_clock_mhz=freq_low_mhz,
+                ),
+            )
+
+        if not _matches_characterization_phase(metrics, pending, state, include_mem=False):
+            return self._high_frequency_decision(
+                metrics=metrics,
+                state=state,
+                reason="everest_defer_characterization_phase_drift",
+                debug_fields=_characterization_debug(pending),
+            )
+
         if mem_high <= 0 or mem_low <= 0:
-            record = self._cache_default_record(
+            return self._high_frequency_decision(
+                metrics=metrics,
                 state=state,
-                phase_id=phase_id,
-                mem_high=max(mem_high, 0.0),
-                mem_low=max(mem_low, 0.0),
-                fs=0.0,
+                reason="everest_wait_for_characterizable_phase",
+                debug_fields=_characterization_debug(pending),
             )
-        else:
-            fs = self._phase_characterizer.estimate_frequency_sensitivity(
-                mem_high=mem_high,
-                mem_low=mem_low,
-                freq_high_mhz=freq_high_mhz,
-                freq_low_mhz=freq_low_mhz,
-            )
-            record = self._store_characterization(
-                state=state,
-                phase_id=phase_id,
-                fs=fs,
-                mem_high=mem_high,
-                mem_low=mem_low,
-                freq_high_mhz=freq_high_mhz,
-                freq_low_mhz=freq_low_mhz,
-            )
+
+        fs = self._phase_characterizer.estimate_frequency_sensitivity(
+            mem_high=mem_high,
+            mem_low=mem_low,
+            freq_high_mhz=freq_high_mhz,
+            freq_low_mhz=freq_low_mhz,
+        )
+        record = self._store_characterization(
+            state=state,
+            phase_id=phase_id,
+            fs=fs,
+            mem_high=mem_high,
+            mem_low=mem_low,
+            freq_high_mhz=freq_high_mhz,
+            freq_low_mhz=freq_low_mhz,
+        )
 
         state.set("characterization_count", int(state.get("characterization_count", 0)) + 1)
         return self._scaled_decision(
@@ -353,6 +424,7 @@ class EverestPolicy:
             pd=float(state.get("pd_target", 0.0)),
             platform=_platform_from_state(metrics, state),
             min_ratio_of_max=float(state.get("min_ratio_of_max", 0.55)),
+            min_frequency_mhz=int(state.get("min_frequency_mhz", _DEFAULT_MIN_FREQUENCY_MHZ)),
         )
         state.set("scaled_decision_count", int(state.get("scaled_decision_count", 0)) + 1)
         debug_fields = {
@@ -378,14 +450,17 @@ class EverestPolicy:
         metrics: MetricWindow,
         state: AlgorithmState,
         reason: str,
+        debug_fields: Mapping[str, object] | None = None,
     ) -> Decision:
         target_mhz = int(state.get("f_high_mhz"))
-        if _is_same_clock(metrics.graphics_clock_avg_mhz, target_mhz):
+        fields = {"target_mhz": target_mhz}
+        fields.update(dict(debug_fields or {}))
+        if _is_same_clock(metrics.graphics_clock_avg_mhz, target_mhz, _clock_match_tolerance_mhz(state)):
             return Decision(
                 action=DecisionAction.HOLD_CLOCK,
                 target_graphics_clock_mhz=None,
                 reason_code=reason,
-                debug_fields={"target_mhz": target_mhz},
+                debug_fields=fields,
             )
         state.set("reset_to_high_count", int(state.get("reset_to_high_count", 0)) + 1)
         state.set("last_target_clock_mhz", target_mhz)
@@ -393,7 +468,7 @@ class EverestPolicy:
             action=DecisionAction.SET_CLOCK,
             target_graphics_clock_mhz=target_mhz,
             reason_code=reason,
-            debug_fields={"target_mhz": target_mhz},
+            debug_fields=fields,
         )
 
     def _set_clock_decision(
@@ -405,7 +480,7 @@ class EverestPolicy:
         reason: str,
         debug_fields: Mapping[str, object] | None = None,
     ) -> Decision:
-        if _is_same_clock(metrics.graphics_clock_avg_mhz, target_mhz):
+        if _is_same_clock(metrics.graphics_clock_avg_mhz, target_mhz, _clock_match_tolerance_mhz(state)):
             return Decision(
                 action=DecisionAction.HOLD_CLOCK,
                 target_graphics_clock_mhz=None,
@@ -456,30 +531,13 @@ class EverestPolicy:
         """
         return self._phase_characterizer.get_phase_characterization(phase_id)
 
-    def _cache_default_record(
-        self,
-        *,
-        state: AlgorithmState,
-        phase_id: str,
-        mem_high: float,
-        mem_low: float,
-        fs: float,
-    ) -> CharacterizationRecord:
-        return self._store_characterization(
-            state=state,
-            phase_id=phase_id,
-            fs=fs,
-            mem_high=max(mem_high, 1e-12),
-            mem_low=max(mem_low, 1e-12),
-            freq_high_mhz=int(state.get("f_high_mhz")),
-            freq_low_mhz=int(state.get("f_low_mhz")),
-        )
-
     def _require_identifier(self, state: AlgorithmState) -> PhaseIdentifier:
         if self._phase_identifier is None:
             self._phase_identifier = PhaseIdentifier(
                 window_seconds=float(state.get("phase_window_seconds", 5.0)),
                 change_threshold_pct=float(state.get("change_threshold_pct", 10.0)),
+                idle_gpu_threshold_pct=float(state.get("idle_gpu_threshold_pct", 5.0)),
+                idle_mem_threshold_pct=float(state.get("idle_mem_threshold_pct", 3.0)),
             )
         return self._phase_identifier
 
@@ -489,6 +547,59 @@ def _phase_cache(state: AlgorithmState) -> dict[str, dict[str, object]]:
     if isinstance(value, dict):
         return dict(value)
     return {}
+
+
+def _clock_match_tolerance_mhz(state: AlgorithmState) -> float:
+    return max(float(state.get("clock_match_tolerance_mhz", 0.5)), 0.5)
+
+
+def _matches_characterization_phase(
+    metrics: MetricWindow,
+    pending: Mapping[str, object],
+    state: AlgorithmState,
+    *,
+    include_mem: bool,
+) -> bool:
+    threshold = float(state.get("change_threshold_pct", 10.0))
+    expected_gpu = float(pending["phase_gpu_util_avg_pct"])
+    if abs(metrics.gpu_util_avg_pct - expected_gpu) >= threshold:
+        return False
+
+    if include_mem:
+        expected_mem = float(pending["phase_mem_util_avg_pct"])
+        if abs(metrics.mem_util_avg_pct - expected_mem) >= threshold:
+            return False
+        expected_idle_like = bool(pending["phase_is_idle_like"])
+        if _is_idle_like_window(metrics, state) != expected_idle_like:
+            return False
+
+    return True
+
+
+def _is_idle_like_window(metrics: MetricWindow, state: AlgorithmState) -> bool:
+    return (
+        metrics.gpu_util_avg_pct <= float(state.get("idle_gpu_threshold_pct", 5.0))
+        and metrics.mem_util_avg_pct <= float(state.get("idle_mem_threshold_pct", 3.0))
+    )
+
+
+def _characterization_debug(
+    pending: Mapping[str, object],
+    *,
+    observed_clock_mhz: float | None = None,
+    expected_clock_mhz: int | None = None,
+) -> dict[str, object]:
+    debug = {
+        "phase_id": pending.get("phase_id"),
+        "stage": pending.get("stage"),
+        "phase_gpu_util_avg_pct": pending.get("phase_gpu_util_avg_pct"),
+        "phase_mem_util_avg_pct": pending.get("phase_mem_util_avg_pct"),
+    }
+    if observed_clock_mhz is not None:
+        debug["observed_clock_mhz"] = observed_clock_mhz
+    if expected_clock_mhz is not None:
+        debug["expected_clock_mhz"] = expected_clock_mhz
+    return debug
 
 
 def _update_pd_violation_if_present(metrics: MetricWindow, state: AlgorithmState) -> None:
@@ -578,5 +689,5 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(value, upper))
 
 
-def _is_same_clock(observed_clock_mhz: float, target_clock_mhz: int) -> bool:
-    return abs(observed_clock_mhz - float(target_clock_mhz)) < 0.5
+def _is_same_clock(observed_clock_mhz: float, target_clock_mhz: int, tolerance_mhz: float = 0.5) -> bool:
+    return abs(observed_clock_mhz - float(target_clock_mhz)) <= max(tolerance_mhz, 0.5)

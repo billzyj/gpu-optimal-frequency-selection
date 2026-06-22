@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from src.common.experiment import StaticPolicy
 from src.common.experiment.types import (
     DecisionAction,
     ExperimentContext,
@@ -69,14 +70,21 @@ class PolicyRegistryTests(unittest.TestCase):
 
 
 class FrequencyBaselinePolicyTests(unittest.TestCase):
-    def test_max_freq_sets_max_once_then_holds(self) -> None:
+    def test_max_freq_initial_decision_sets_max_and_windows_hold(self) -> None:
         policy = MaxFreqPolicy()
         context = make_context("max_freq")
         state = policy.initialize(context, {})
 
+        self.assertIsInstance(policy, StaticPolicy)
+        initial = policy.initial_decision(context, state)
+        self.assertEqual(initial.action, DecisionAction.SET_CLOCK)
+        self.assertEqual(initial.target_graphics_clock_mhz, 1410)
+        self.assertEqual(initial.reason_code, "max_freq_pre_run_apply")
+
         first = policy.on_window(make_window(1, clock_mhz=900.0), state)
-        self.assertEqual(first.action, DecisionAction.SET_CLOCK)
-        self.assertEqual(first.target_graphics_clock_mhz, 1410)
+        self.assertEqual(first.action, DecisionAction.HOLD_CLOCK)
+        self.assertIsNone(first.target_graphics_clock_mhz)
+        self.assertEqual(first.reason_code, "max_freq_monitor_hold")
 
         second = policy.on_window(make_window(2, clock_mhz=1410.0), state)
         self.assertEqual(second.action, DecisionAction.HOLD_CLOCK)
@@ -86,14 +94,21 @@ class FrequencyBaselinePolicyTests(unittest.TestCase):
         self.assertEqual(summary.policy_name, "max_freq")
         self.assertEqual(summary.total_windows, 2)
 
-    def test_min_freq_sets_min_once_then_holds(self) -> None:
+    def test_min_freq_initial_decision_sets_min_and_windows_hold(self) -> None:
         policy = MinFreqPolicy()
         context = make_context("min_freq")
         state = policy.initialize(context, {})
 
+        self.assertIsInstance(policy, StaticPolicy)
+        initial = policy.initial_decision(context, state)
+        self.assertEqual(initial.action, DecisionAction.SET_CLOCK)
+        self.assertEqual(initial.target_graphics_clock_mhz, 210)
+        self.assertEqual(initial.reason_code, "min_freq_pre_run_apply")
+
         first = policy.on_window(make_window(1, clock_mhz=1410.0), state)
-        self.assertEqual(first.action, DecisionAction.SET_CLOCK)
-        self.assertEqual(first.target_graphics_clock_mhz, 210)
+        self.assertEqual(first.action, DecisionAction.HOLD_CLOCK)
+        self.assertIsNone(first.target_graphics_clock_mhz)
+        self.assertEqual(first.reason_code, "min_freq_monitor_hold")
 
         second = policy.on_window(make_window(2, clock_mhz=210.0), state)
         self.assertEqual(second.action, DecisionAction.HOLD_CLOCK)

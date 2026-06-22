@@ -28,15 +28,15 @@ class FrequencyScalerTests(unittest.TestCase):
         self.assertAlmostEqual(result.raw_frequency_mhz, 1153.6363636, places=4)
         self.assertEqual(result.target_frequency_mhz, 1155)
 
-    def test_fs_zero_uses_minimum_allowed_ratio(self) -> None:
+    def test_fs_zero_uses_paper_frequency_floor_when_platform_allows(self) -> None:
         result = self.scaler.compute_target_frequency(
             freq_high_mhz=1410,
             fs=0.0,
             pd=0.1,
             platform=self.platform,
         )
-        self.assertEqual(result.min_allowed_mhz, 776)
-        self.assertEqual(result.target_frequency_mhz, 780)
+        self.assertEqual(result.min_allowed_mhz, 900)
+        self.assertEqual(result.target_frequency_mhz, 900)
 
     def test_pd_zero_keeps_high_frequency(self) -> None:
         result = self.scaler.compute_target_frequency(
@@ -67,6 +67,26 @@ class FrequencyScalerTests(unittest.TestCase):
         )
         self.assertEqual(result.max_allowed_mhz, 300)
         self.assertEqual(result.target_frequency_mhz, 300)
+
+    def test_paper_frequency_floor_is_bounded_by_platform_maximum(self) -> None:
+        small_platform = PlatformSpec(
+            vendor="nvidia",
+            gpu_model="small-test-gpu",
+            gpu_count=1,
+            min_graphics_clock_mhz=210,
+            max_graphics_clock_mhz=810,
+            graphics_clock_step_mhz=15,
+        )
+
+        result = self.scaler.compute_target_frequency(
+            freq_high_mhz=810,
+            fs=0.0,
+            pd=0.1,
+            platform=small_platform,
+        )
+
+        self.assertEqual(result.max_allowed_mhz, 810)
+        self.assertEqual(result.target_frequency_mhz, 810)
 
 
 if __name__ == "__main__":

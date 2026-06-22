@@ -76,14 +76,24 @@ workload profile to be supplied through `POLICY_CONFIG_PATH` or
 For a compact config-file schema, see
 `config/algorithms/ali_2022_reimpl/README.md`.
 
+The example below is an explicitly labeled local-platform proxy. Use
+`reproduction_mode: "paper_faithful_gv100"` only with the GV100 510-1380 MHz
+frequency space and max-frequency profiling provenance described above.
+
 ```json
 {
   "objective": "edp",
-  "frequencies_mhz": [510, 525, 540, 555],
-  "f_max_mhz": 1380,
+  "reproduction_mode": "algorithmic_proxy",
+  "frequencies_mhz": [900, 1200, 1500],
+  "f_max_mhz": 1500,
   "fp_activity": 0.25,
   "dram_activity": 0.40,
   "t_fmax_s": 12.34,
+  "profiling_run_count": 3,
+  "sampling_interval_ms": 20,
+  "profiler_source": "dcgmi",
+  "profile_source": "max-frequency-profile-log",
+  "calibration_source": "offline-calibration-fit",
   "power_coefficients": {
     "alpha": 0.0,
     "beta": 0.0,
@@ -101,5 +111,7 @@ For a compact config-file schema, see
 ```
 
 The policy predicts power, runtime, energy, EDP, and ED2P for every candidate
-frequency, selects one whole-workload clock, applies it once, and then holds it.
-It does not update the decision online.
+frequency, selects one whole-workload clock, and exposes it through the
+`StaticPolicy` protocol (`initial_decision(context, state)`) for one pre-window
+application. Its `on_window` is monitor-only and never re-applies or updates the
+selected frequency online.

@@ -15,7 +15,7 @@ src/
 |-- common/
 |   |-- experiment/  # implemented shared lifecycle/data/validation contract
 |   |-- telemetry/   # implemented env-var provider; hardware providers pending
-|   |-- control/     # placeholder for future clock-control adapters
+|   |-- control/     # implemented ClockController + shell-template backend
 |   |-- power/       # placeholder for future power/energy helpers
 |   |-- io/          # placeholder for future artifact IO helpers
 |   `-- cli/         # placeholder for future shared CLI helpers
@@ -53,6 +53,7 @@ src/
 
 1. `tests/common/experiment` mirrors `src/common/experiment`.
 2. `tests/common/telemetry` mirrors `src/common/telemetry`.
-3. `tests/methods/...` mirrors `src/methods/...`.
-4. `tests/scripts/run` mirrors `scripts/run`, because runtime entrypoints are not
+3. `tests/common/control` mirrors `src/common/control`.
+4. `tests/methods/...` mirrors `src/methods/...`.
+5. `tests/scripts/run` mirrors `scripts/run`, because runtime entrypoints are not
    part of `src`.

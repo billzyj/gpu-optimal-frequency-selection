@@ -56,11 +56,18 @@ Each sweep point should include:
    uses this only as a tie-breaker among equal-frequency candidates, so it is
    not required for basic selection.
 
-The current `StaticOraclePolicy` accepts either:
+Faithful `StaticOraclePolicy` runs require:
 
-1. `workload_profiles[workload_name]`: a per-workload profile.
-2. `workload_profiles.default`: fallback profile.
-3. `profile`: a single profile list applied to all workloads.
+1. `workload_profiles[workload_name]`: an exact profile for the workload being
+   run.
+2. Profile points in the EVeREST comparison frequency domain. By default,
+   points below `max(platform_min_clock, 900 MHz)` are ignored when the platform
+   maximum is at least 900 MHz.
+
+`workload_profiles.default` and `profile` are accepted only when
+`allow_proxy_profile: true` is set. Such runs are non-faithful proxy runs and
+are labeled with `profile_mode: proxy` in state, decision debug fields, and the
+final summary.
 
 Supported profile field aliases are documented in `../policy.py`.
 
@@ -74,17 +81,21 @@ target_ratio = 1 - PD
 
 Then:
 
-1. Keep sweep points where `performance_ratio >= target_ratio`.
-2. Select the lowest `frequency_mhz` among those valid points.
-3. If no point satisfies the target, fall back to the point with the best
-   observed `performance_ratio`.
-4. Clamp the selected frequency to the platform min/max graphics-clock bounds.
-5. Apply the selected clock once at initialization and hold it for the run.
+1. Drop points outside the configured comparison frequency domain.
+2. Keep sweep points where `performance_ratio >= target_ratio`.
+3. Select the lowest `frequency_mhz` among those valid points.
+4. In faithful mode, fail initialization if no in-domain point satisfies the
+   target.
+5. Clamp the selected frequency to the platform min/max graphics-clock bounds.
+6. Expose `initial_decision(context, state)` so the shared runner can apply the
+   selected clock before the first measured window, then hold that clock for the
+   run.
 
 This matches the current source code in `../policy.py`:
 `choose_static_oracle_clock()` selects the lowest profiled frequency satisfying
-the target performance ratio, and `StaticOraclePolicy` emits one set-clock
-decision followed by hold decisions.
+the target performance ratio for compatibility with selector-level callers,
+while `StaticOraclePolicy` enforces faithful profile provenance, target
+validity, and frequency-domain constraints at initialization.
 
 ## 6. Minimal Reproduction Procedure
 
@@ -98,6 +109,8 @@ decision followed by hold decisions.
 5. Verify that the selected fixed clock satisfies the offline profile target.
 6. In the measured run, report runtime, performance ratio, power, energy, and
    whether observed performance still satisfies the target.
+7. Report profile provenance and whether the run used faithful or proxy profile
+   mode.
 
 ## 7. Ambiguities and Limitations
 
@@ -113,10 +126,12 @@ decision followed by hold decisions.
 4. A single static clock cannot adapt to intra-run phase changes. It is useful
    as an offline-knowledge comparison point, not as a deployable runtime
    controller.
-5. The current policy falls back to best observed performance if no profiled
-   point meets the target. Such runs should be reported as target-missing
-   oracle profiles, not as successful oracle selections.
-6. If performance is noisy, a single sweep may falsely classify a frequency as
+5. Proxy mode may still report a target-missing fallback for audit or exploratory
+   comparisons, but it must not be reported as a faithful oracle selection.
+6. The default EVeREST-domain floor excludes lower clocks that may be valid for
+   broader oracle-domain studies. Disable the floor only when the broader domain
+   is explicitly labeled in docs and results.
+7. If performance is noisy, a single sweep may falsely classify a frequency as
    target-satisfying. Reproductions should prefer repeated runs or confidence
    intervals before treating a clock as oracle-valid.
 

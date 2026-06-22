@@ -12,6 +12,12 @@ from src.common.experiment import (
     MetricWindow,
 )
 
+PAPER_FAITHFUL_GV100_MODE = "paper_faithful_gv100"
+ALGORITHMIC_PROXY_MODE = "algorithmic_proxy"
+_VALID_REPRODUCTION_MODES = {PAPER_FAITHFUL_GV100_MODE, ALGORITHMIC_PROXY_MODE}
+_PAPER_GV100_MIN_MHZ = 510
+_PAPER_GV100_MAX_MHZ = 1380
+
 
 @dataclass(slots=True, frozen=True)
 class PowerModelCoefficients:
@@ -185,13 +191,28 @@ class AliFrequencySelectionPolicy:
         config: Mapping[str, object],
     ) -> AlgorithmState:
         objective = _normalize_objective(_optional_string(config, "objective", "edp"))
+        reproduction_mode = _normalize_reproduction_mode(
+            _optional_string(config, "reproduction_mode", PAPER_FAITHFUL_GV100_MODE)
+        )
         f_max_mhz = _optional_int(config, "f_max_mhz", context.platform.max_graphics_clock_mhz)
+        _validate_f_max_mhz(f_max_mhz, context)
         frequencies_mhz = _load_frequencies(config, context)
+        _validate_frequency_space(
+            frequencies_mhz=frequencies_mhz,
+            f_max_mhz=f_max_mhz,
+            reproduction_mode=reproduction_mode,
+            context=context,
+        )
         fp_activity = _required_float(config, "fp_activity")
         dram_activity = _required_float(config, "dram_activity")
         t_fmax_s = _required_float(config, "t_fmax_s")
         power_coefficients = _load_power_coefficients(config)
         performance_coefficients = _load_performance_coefficients(config)
+        profiling_run_count = _optional_positive_int(config, "profiling_run_count")
+        sampling_interval_ms = _optional_positive_int(config, "sampling_interval_ms")
+        profiler_source = _optional_nullable_string(config, "profiler_source")
+        profile_source = _optional_nullable_string(config, "profile_source")
+        calibration_source = _optional_nullable_string(config, "calibration_source")
 
         estimates = build_frequency_estimates(
             frequencies_mhz=frequencies_mhz,
@@ -208,52 +229,60 @@ class AliFrequencySelectionPolicy:
         state.set("run_id", context.metadata.run_id)
         state.set("pd_target", context.pd_target)
         state.set("objective", selection.objective)
+        state.set("reproduction_mode", reproduction_mode)
         state.set("selected_clock_mhz", selection.selected_frequency_mhz)
+        state.set("pre_run_target_graphics_clock_mhz", selection.selected_frequency_mhz)
+        state.set("requires_pre_run_clock", True)
         state.set("selected_estimate", selection.selected_estimate.to_dict())
         state.set("frequency_estimates", [estimate.to_dict() for estimate in estimates])
+        state.set("frequencies_mhz", frequencies_mhz)
         state.set("f_max_mhz", f_max_mhz)
         state.set("fp_activity", fp_activity)
         state.set("dram_activity", dram_activity)
         state.set("t_fmax_s", t_fmax_s)
+        state.set("profiling_run_count", profiling_run_count)
+        state.set("sampling_interval_ms", sampling_interval_ms)
+        state.set("runtime_sampling_interval_ms", context.sampling_interval_ms)
+        state.set("profiler_source", profiler_source)
+        state.set("profile_source", profile_source)
+        state.set("calibration_source", calibration_source)
         state.set("power_coefficients", asdict(power_coefficients))
         state.set("performance_coefficients", asdict(performance_coefficients))
-        state.set("decision_emitted", False)
         state.set("total_windows", 0)
         return state
 
-    def on_window(
+    def initial_decision(
         self,
-        metrics: MetricWindow,
+        context: ExperimentContext,  # noqa: ARG002 - kept for runner API symmetry.
         state: AlgorithmState,
     ) -> Decision:
+        selected_clock_mhz = int(
+            state.get("pre_run_target_graphics_clock_mhz", state.get("selected_clock_mhz"))
+        )
+        return Decision(
+            action=DecisionAction.SET_CLOCK,
+            target_graphics_clock_mhz=selected_clock_mhz,
+            reason_code="ali_pre_run_apply_selected_clock",
+            debug_fields=_decision_debug_fields(state),
+        )
+
+    def on_window(
+        self,
+        metrics: MetricWindow,  # noqa: ARG002 - monitor-only; clock owned by initial_decision.
+        state: AlgorithmState,
+    ) -> Decision:
+        """Monitor-only window step.
+
+        The selected whole-workload clock is owned by ``initial_decision``
+        (applied once before window 0), so this method never emits a clock
+        change. It only counts windows and holds.
+        """
         state.set("total_windows", int(state.get("total_windows", 0)) + 1)
-        selected_clock_mhz = int(state.get("selected_clock_mhz"))
-        debug_fields = {
-            "selected_clock_mhz": selected_clock_mhz,
-            "objective": str(state.get("objective")),
-        }
-
-        if not bool(state.get("decision_emitted", False)):
-            state.set("decision_emitted", True)
-            if _is_same_clock(metrics.graphics_clock_avg_mhz, selected_clock_mhz):
-                return Decision(
-                    action=DecisionAction.HOLD_CLOCK,
-                    target_graphics_clock_mhz=None,
-                    reason_code="ali_already_at_selected_clock",
-                    debug_fields=debug_fields,
-                )
-            return Decision(
-                action=DecisionAction.SET_CLOCK,
-                target_graphics_clock_mhz=selected_clock_mhz,
-                reason_code="ali_apply_selected_clock",
-                debug_fields=debug_fields,
-            )
-
         return Decision(
             action=DecisionAction.HOLD_CLOCK,
             target_graphics_clock_mhz=None,
-            reason_code="ali_hold_selected_clock",
-            debug_fields=debug_fields,
+            reason_code="ali_monitor_hold",
+            debug_fields=_decision_debug_fields(state),
         )
 
     def finalize(self, state: AlgorithmState) -> FinalSummary:
@@ -266,12 +295,26 @@ class AliFrequencySelectionPolicy:
             max_pd_violation=0.0,
             custom_summary={
                 "selected_clock_mhz": int(state.get("selected_clock_mhz", 0)),
+                "pre_run_target_graphics_clock_mhz": int(
+                    state.get("pre_run_target_graphics_clock_mhz", 0)
+                ),
+                "requires_pre_run_clock": bool(state.get("requires_pre_run_clock", False)),
                 "objective": str(state.get("objective")),
+                "reproduction_mode": str(state.get("reproduction_mode")),
                 "model_scope": "offline_application_level",
                 "f_max_mhz": int(state.get("f_max_mhz", 0)),
+                "frequencies_mhz": state.get("frequencies_mhz", []),
                 "fp_activity": float(state.get("fp_activity", 0.0)),
                 "dram_activity": float(state.get("dram_activity", 0.0)),
                 "t_fmax_s": float(state.get("t_fmax_s", 0.0)),
+                "profiling_run_count": state.get("profiling_run_count"),
+                "sampling_interval_ms": state.get("sampling_interval_ms"),
+                "runtime_sampling_interval_ms": int(
+                    state.get("runtime_sampling_interval_ms", 0)
+                ),
+                "profiler_source": state.get("profiler_source"),
+                "profile_source": state.get("profile_source"),
+                "calibration_source": state.get("calibration_source"),
                 "selected_estimate": state.get("selected_estimate", {}),
                 "frequency_estimates": state.get("frequency_estimates", []),
                 "power_coefficients": state.get("power_coefficients", {}),
@@ -280,10 +323,31 @@ class AliFrequencySelectionPolicy:
         )
 
 
+def _decision_debug_fields(state: AlgorithmState) -> dict[str, object]:
+    selected_clock_mhz = int(state.get("selected_clock_mhz", 0))
+    return {
+        "selected_clock_mhz": selected_clock_mhz,
+        "pre_run_target_graphics_clock_mhz": int(
+            state.get("pre_run_target_graphics_clock_mhz", selected_clock_mhz)
+        ),
+        "requires_pre_run_clock": bool(state.get("requires_pre_run_clock", False)),
+        "objective": str(state.get("objective")),
+        "reproduction_mode": str(state.get("reproduction_mode")),
+    }
+
+
 def _normalize_objective(objective: str) -> str:
     if objective not in {"edp", "ed2p"}:
         raise ValueError("objective must be 'edp' or 'ed2p'.")
     return objective
+
+
+def _normalize_reproduction_mode(reproduction_mode: str) -> str:
+    if reproduction_mode not in _VALID_REPRODUCTION_MODES:
+        raise ValueError(
+            "reproduction_mode must be 'paper_faithful_gv100' or 'algorithmic_proxy'."
+        )
+    return reproduction_mode
 
 
 def _load_frequencies(config: Mapping[str, object], context: ExperimentContext) -> list[int]:
@@ -311,6 +375,58 @@ def _load_frequencies(config: Mapping[str, object], context: ExperimentContext) 
     if not frequencies:
         raise ValueError("frequencies_mhz must be non-empty.")
     return frequencies
+
+
+def _validate_f_max_mhz(f_max_mhz: int, context: ExperimentContext) -> None:
+    if not (
+        context.platform.min_graphics_clock_mhz
+        <= f_max_mhz
+        <= context.platform.max_graphics_clock_mhz
+    ):
+        raise ValueError(
+            "f_max_mhz must fall within the platform graphics clock range."
+        )
+
+
+def _validate_frequency_space(
+    *,
+    frequencies_mhz: list[int],
+    f_max_mhz: int,
+    reproduction_mode: str,
+    context: ExperimentContext,
+) -> None:
+    previous_frequency_mhz: int | None = None
+    for frequency_mhz in frequencies_mhz:
+        if previous_frequency_mhz is not None and frequency_mhz <= previous_frequency_mhz:
+            raise ValueError(
+                "frequencies_mhz must be strictly increasing with unique values."
+            )
+        previous_frequency_mhz = frequency_mhz
+
+        if not (
+            context.platform.min_graphics_clock_mhz
+            <= frequency_mhz
+            <= context.platform.max_graphics_clock_mhz
+        ):
+            raise ValueError(
+                "frequencies_mhz values must fall within the platform graphics clock range."
+            )
+
+        if frequency_mhz > f_max_mhz:
+            raise ValueError("frequencies_mhz values must not exceed f_max_mhz.")
+
+    max_candidate_mhz = frequencies_mhz[-1]
+    if reproduction_mode == PAPER_FAITHFUL_GV100_MODE:
+        if f_max_mhz != max_candidate_mhz:
+            raise ValueError(
+                "paper_faithful_gv100 configs require f_max_mhz to equal the "
+                "maximum candidate frequency."
+            )
+        if frequencies_mhz[0] != _PAPER_GV100_MIN_MHZ or f_max_mhz != _PAPER_GV100_MAX_MHZ:
+            raise ValueError(
+                "paper_faithful_gv100 configs must use the GV100 510-1380 MHz "
+                "frequency range."
+            )
 
 
 def _load_power_coefficients(config: Mapping[str, object]) -> PowerModelCoefficients:
@@ -357,6 +473,18 @@ def _optional_int(config: Mapping[str, object], key: str, default: int) -> int:
     return int(round(float(value)))
 
 
+def _optional_positive_int(config: Mapping[str, object], key: str) -> int | None:
+    value = config.get(key)
+    if value is None:
+        return None
+    if not _is_number(value):
+        raise ValueError(f"{key} must be numeric.")
+    result = int(round(float(value)))
+    if result <= 0:
+        raise ValueError(f"{key} must be positive.")
+    return result
+
+
 def _optional_string(config: Mapping[str, object], key: str, default: str) -> str:
     value = config.get(key)
     if value is None:
@@ -366,8 +494,13 @@ def _optional_string(config: Mapping[str, object], key: str, default: str) -> st
     return value
 
 
-def _is_same_clock(observed_clock_mhz: float, target_clock_mhz: int) -> bool:
-    return abs(observed_clock_mhz - float(target_clock_mhz)) < 0.5
+def _optional_nullable_string(config: Mapping[str, object], key: str) -> str | None:
+    value = config.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string.")
+    return value
 
 
 def _is_number(value: object) -> bool:

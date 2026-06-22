@@ -105,12 +105,17 @@ This mode is not yet implemented in local import helpers.
 
 ## 6. Interface Mapping in This Repository
 
-1. `AlgorithmInterface`: online or runner-applied policies.
-2. `WindowTelemetryProvider`: source of per-window `MetricWindow` objects.
-3. `EnvTelemetryProvider`: current dry-run/test provider backed by `METRIC_*`
+1. `AlgorithmInterface`: window-level lifecycle for all policies.
+2. `StaticPolicy`: capability protocol for fixed-clock and whole-workload
+   methods; the runner applies their `initial_decision()` once before window 0
+   and keeps their `on_window()` monitor-only.
+3. `WindowTelemetryProvider`: source of per-window `MetricWindow` objects.
+4. `EnvTelemetryProvider`: current dry-run/test provider backed by `METRIC_*`
    environment variables.
-4. `APPLY_CLOCK_CMD_TEMPLATE`: transitional shell-command control path.
-5. External benchmarking remains a repository boundary, not a method category
+5. `ClockController`: typed actuation seam. The default `ShellTemplateController`
+   backend applies `APPLY_CLOCK_CMD_TEMPLATE` / `APPLY_CLOCK_RESET_CMD`, or logs
+   a dry-run when no template is set.
+6. External benchmarking remains a repository boundary, not a method category
    under `src/methods`.
 
 ## 7. Environment Contract
@@ -134,6 +139,10 @@ Common policy/runtime variables:
 4. `METRIC_SAMPLING_INTERVAL_MS` (default: `1000`)
 5. `POLICY_CONFIG_PATH` or `POLICY_CONFIG_JSON`
 6. `MAX_CONSECUTIVE_FAILURES` (default: `5`)
+7. `CONTROL_PHASE` (default: `all`; `all` | `prerun` | `loop`). Selects whether
+   the runner applies the static pre-run decision, runs the windowed loop, or
+   both. `controlled_mode.sbatch` uses `prerun` before launching the benchmark
+   and `loop` afterward.
 
 Platform variables:
 
@@ -199,13 +208,14 @@ repository's schema and enforce:
 2. `scripts/run/control_loop.py`: primary long-lived runner.
 3. `scripts/run/control_runtime.py`: shared runtime helper module.
 4. `scripts/run/control_hook.py`: legacy single-window hook; keep for backward
-   compatibility, but do not build new flows around it.
+   compatibility, including `StaticPolicy` initial decisions at `WINDOW_INDEX=0`,
+   but do not build new flows around it.
 
 ## 11. Implementation Priorities
 
 1. Add hardware-backed `WindowTelemetryProvider` implementations.
-2. Replace shell-command actuation with typed control adapters while keeping the
-   current command-template path as a fallback.
+2. Add typed `ClockController` backends (NVML / AMD-SMI) behind the existing
+   protocol, keeping `ShellTemplateController` as the fallback path.
 3. Add import/validation helpers for external benchmark artifacts.
 4. Freeze the processed-output schema in `analysis/schema`.
 5. Add one end-to-end controlled benchmark validation run.

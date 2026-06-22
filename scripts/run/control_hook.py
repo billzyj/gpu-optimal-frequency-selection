@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.common.experiment import validate_decision
+from src.common.experiment import StaticPolicy, validate_decision
 from src.methods.registry import resolve_policy
 
 from scripts.run.control_runtime import (
@@ -60,20 +60,28 @@ def main() -> int:
         policy = resolve_policy(policy_name)
         context = build_context(policy_name, bench_id, run_id, started_at_utc)
         state = load_or_initialize_state(state_path, policy, context, policy_config)
-        metrics = build_window(context, window_index)
 
-        decision = policy.on_window(metrics, state)
+        decision_window_index = window_index
+        decision = None
+        if window_index == 0 and isinstance(policy, StaticPolicy):
+            decision = policy.initial_decision(context, state)
+            decision_window_index = -1
+
+        if decision is None:
+            metrics = build_window(context, window_index)
+            decision = policy.on_window(metrics, state)
+
         validate_decision(decision, context.platform)
         apply_decision(decision, control_log)
 
         persist_state(state_path, state)
-        append_decision_row(decisions_csv, policy_name, decision, window_index)
-        write_last_decision(decision_path, policy_name, window_index, decision)
+        append_decision_row(decisions_csv, policy_name, decision, decision_window_index)
+        write_last_decision(decision_path, policy_name, decision_window_index, decision)
 
         append_log(
             control_log,
             (
-                f"window={window_index} policy={policy_name} "
+                f"window={decision_window_index} policy={policy_name} "
                 f"decision={decision.action.value} target={decision.target_graphics_clock_mhz} "
                 f"reason={decision.reason_code}"
             ),

@@ -23,6 +23,8 @@ Purpose:
 3. Run one long-lived control loop while the benchmark process is alive.
 4. Preserve policy state in memory for the full run.
 5. Call `finalize()` once and write `control/final_summary.json`.
+6. For offline/static policies, apply any optional initial clock before the
+   benchmark process starts.
 
 This follows `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`:
 
@@ -130,6 +132,37 @@ Notes:
 3. `final_summary.json` is written even when the runner aborts after repeated
    per-window failures.
 
+## Offline Initial Decisions
+
+Fixed-clock and static/offline whole-workload policies implement the
+`StaticPolicy` protocol (`initial_decision(context, state)`). `control_loop.py`
+detects support with
+`isinstance`, calls the method after `initialize()` and before telemetry
+window 0, validates the returned `Decision`, applies it, and records it in
+`decisions.csv` with `window=-1`. A `StaticPolicy`'s `on_window()` is
+monitor-only, so the clock is applied through exactly one path; online
+window-driven policies do not implement the protocol and drive the clock through
+`on_window()`.
+
+The runner phase is selected by the `CONTROL_PHASE` environment variable:
+
+1. `all` (default): apply the pre-run decision (for static policies), then run
+   the windowed loop in the same process.
+2. `prerun`: apply only the pre-run decision and exit. Does not require
+   `BENCH_PID`/`MAX_WINDOWS`. Used to set the clock before the benchmark starts.
+3. `loop`: run only the windowed loop and skip the pre-run decision because an
+   earlier `prerun` phase already applied it.
+
+`controlled_mode.sbatch` runs `CONTROL_PHASE=prerun` before launching the
+benchmark, then runs the long-lived loop with `CONTROL_PHASE=loop` after
+`BENCH_PID` is known. This keeps whole-workload offline methods from measuring
+an initial default-frequency interval without duplicating the `window=-1`
+decision.
+
+The legacy `control_hook.py` path also applies a `StaticPolicy`'s
+`initial_decision()` when `WINDOW_INDEX=0`. New controlled-mode runs should
+still prefer `control_loop.py`.
+
 ## Clock Command Templates
 
 The control loop reads platform bounds and command templates from environment
@@ -141,8 +174,11 @@ export PLATFORM_MAX_CLOCK_MHZ=1410
 export PLATFORM_CLOCK_STEP_MHZ=15
 ```
 
-When `APPLY_CLOCK_CMD_TEMPLATE` is unset, `control_loop.py` runs in dry-run mode
-and only logs decisions. When it is set, the runner formats the template with:
+Actuation flows through the `ClockController` seam in `src/common/control`; the
+default `ShellTemplateController` backend applies these templates and is
+unit-tested without hardware. When `APPLY_CLOCK_CMD_TEMPLATE` is unset,
+`control_loop.py` runs in dry-run mode and only logs decisions. When it is set,
+the runner formats the template with:
 
 1. `{target_mhz}`: selected graphics/core clock in MHz.
 2. `{action}`: control action, usually `set_clock`.
@@ -150,6 +186,10 @@ and only logs decisions. When it is set, the runner formats the template with:
 
 Set `APPLY_CLOCK_RESET_CMD` to restore hardware clock state during Slurm
 cleanup.
+
+For a NVIDIA/AMD comparison of supported-clock probing, set-clock mechanisms,
+MHz-vs-level mapping, and expected root/admin requirements, see
+`src/methods/README.md`.
 
 ### NVIDIA
 

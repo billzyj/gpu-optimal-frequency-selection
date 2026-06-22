@@ -16,7 +16,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 # Ensure the repository root is importable when invoked from Slurm hooks or
 # directly via ``python3 scripts/run/<module>.py``.
@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.common.control import ClockController, ShellTemplateController
 from src.common.experiment import (
     AlgorithmState,
     Decision,
@@ -314,26 +315,24 @@ def persist_state(state_path: Path, state: AlgorithmState) -> None:
 # ---------------------------------------------------------------------------
 
 
-def apply_decision(decision: Decision, control_log: Path) -> None:
-    """Applies *decision* by invoking ``APPLY_CLOCK_CMD_TEMPLATE`` or logging a dry-run."""
-    if not decision.requires_clock_change or decision.target_graphics_clock_mhz is None:
-        return
+def build_clock_controller(logger: Callable[[str], None]) -> ClockController:
+    """Builds the default env-backed clock controller.
 
-    template = os.getenv("APPLY_CLOCK_CMD_TEMPLATE", "")
-    if not template:
-        append_log(
-            control_log,
-            f"dry-run control action: set_clock target={decision.target_graphics_clock_mhz} MHz",
-        )
-        return
-
-    cmd = template.format(
-        target_mhz=decision.target_graphics_clock_mhz,
-        action=decision.action.value,
-        reason=decision.reason_code,
+    Reads ``APPLY_CLOCK_CMD_TEMPLATE`` and ``APPLY_CLOCK_RESET_CMD`` and returns
+    a :class:`ShellTemplateController`. This is the env-binding adapter for the
+    typed actuation seam, mirroring how ``build_window`` binds telemetry.
+    """
+    return ShellTemplateController(
+        apply_template=os.getenv("APPLY_CLOCK_CMD_TEMPLATE", "") or None,
+        reset_cmd=os.getenv("APPLY_CLOCK_RESET_CMD", "") or None,
+        logger=logger,
     )
-    append_log(control_log, f"applying control command: {cmd}")
-    subprocess.run(cmd, shell=True, check=True)
+
+
+def apply_decision(decision: Decision, control_log: Path) -> None:
+    """Applies *decision* through the env-backed :class:`ClockController`."""
+    controller = build_clock_controller(lambda message: append_log(control_log, message))
+    controller.apply(decision)
 
 
 # ---------------------------------------------------------------------------

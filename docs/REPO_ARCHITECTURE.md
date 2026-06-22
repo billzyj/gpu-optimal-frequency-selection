@@ -28,9 +28,9 @@ next hardware-integration step. The strongest choices are:
 The main architecture risks are not structural; they are unfinished integration
 surfaces:
 
-1. `src/common/telemetry` only has an environment-variable provider today.
-2. `src/common/control`, `src/common/power`, `src/common/io`, and
-   `src/common/cli` are placeholders.
+1. `src/common/telemetry` only has an environment-variable provider today, and
+   `src/common/control` only has the shell-template actuation backend.
+2. `src/common/power`, `src/common/io`, and `src/common/cli` are placeholders.
 3. External benchmark artifact import/normalization is specified but not
    implemented.
 4. `analysis/schema` is not yet frozen, so downstream result consumers should
@@ -143,7 +143,22 @@ Applies to:
    runner.
 3. Proposed methods.
 
-### 5.2 Runtime Registry
+### 5.2 Static Policies (`StaticPolicy`)
+
+Also defined in `src/common/experiment/interfaces.py`. A static whole-run policy
+implements `AlgorithmInterface` and additionally:
+
+1. `initial_decision(context, state) -> Decision | None`
+
+The runner detects support structurally with `isinstance(policy, StaticPolicy)`
+and applies the returned decision exactly once before window 0. A static
+policy's `on_window` is monitor-only: it returns `HOLD_CLOCK`/`NO_OP` and must
+not change the clock. This gives static methods a single clock-apply path
+(the pre-run decision) and avoids a duplicate window-driven apply. Current
+static policies: `max_freq`, `min_freq`, `oracle_static`, `ali_2022_reimpl`.
+Online window-driven policies such as `everest` do not implement this protocol.
+
+### 5.3 Runtime Registry
 
 `src/methods/registry.py` is the only default runner registry. Add a policy
 there only after the policy:
@@ -166,7 +181,8 @@ Current supported `POLICY_NAME` values:
 1. `experiment`: implemented contracts, types, and decision validation.
 2. `telemetry`: implemented `WindowTelemetryProvider` protocol and
    `EnvTelemetryProvider`; hardware providers are pending.
-3. `control`: placeholder for future clock/power actuation adapters.
+3. `control`: implemented `ClockController` protocol and `ShellTemplateController`
+   shell-template backend; typed NVML/AMD-SMI backends are pending.
 4. `power`: placeholder for future power/energy collection helpers.
 5. `io`: placeholder for future schema-safe artifact read/write helpers.
 6. `cli`: placeholder for future shared command-line helpers.
@@ -186,7 +202,9 @@ Controlled mode is the primary runtime model:
    reached.
 4. `scripts/run/control_runtime.py` owns shared helpers for environment parsing,
    manifests, decision logs, state snapshots, and clock-command application.
-5. `scripts/run/control_hook.py` remains as a legacy single-window hook.
+5. `scripts/run/control_hook.py` remains as a legacy single-window hook; it
+   applies `StaticPolicy.initial_decision()` at `WINDOW_INDEX=0` for backward
+   compatibility, but new flows should use `control_loop.py`.
 
 The primary controlled-mode artifact directory is:
 
@@ -207,7 +225,8 @@ Tests mirror the owner directory, not only `src`:
 tests/
 |-- common/
 |   |-- experiment/        # src/common/experiment
-|   `-- telemetry/         # src/common/telemetry
+|   |-- telemetry/         # src/common/telemetry
+|   `-- control/           # src/common/control
 |-- methods/
 |   |-- proposed_methods/  # src/methods/proposed_methods
 |   `-- comparison_methods/
@@ -238,8 +257,8 @@ provisional and record schema assumptions in each analysis script or notebook.
 ## 10. Recommended Expansion Order
 
 1. Add a hardware telemetry provider behind `WindowTelemetryProvider`.
-2. Add typed clock-control adapters and keep shell command templates as a
-   transitional path.
+2. Add a hardware `ClockController` backend (NVML / AMD-SMI) behind the existing
+   protocol; the shell-template backend already covers the transitional path.
 3. Validate `POLICY_NAME=everest` with one real controlled benchmark.
 4. Add import/validation helpers for `external/repacss-benchmarking` artifacts.
 5. Freeze analysis schema and add integration tests for controlled and

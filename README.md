@@ -6,6 +6,36 @@ Paper-specific GPU DVFS research code for one workflow:
 2. Run them under a shared experiment protocol.
 3. Keep the proposed method separate while it is still evolving.
 
+## Research Model
+
+This project has two coupled research layers.
+
+1. **Frequency-selection algorithms** decide what GPU frequency, clock level, or
+   frequency band an application should use at runtime. This layer includes
+   paper-faithful reproductions such as EVeREST, Ali-style frequency selection,
+   oracle/static baselines, and any proposed method. Its main question is:
+   given workload behavior and performance-degradation targets, what frequency
+   should the policy request?
+2. **Hardware frequency realization** determines whether that requested
+   frequency can actually be applied on the target cluster, how it is applied,
+   how quickly it takes effect, which privileges it needs, how it is reset, and
+   how the achieved clock is verified. This layer is vendor- and site-specific:
+   REPACSS NVIDIA H100 and AMD MI210 nodes may expose different clock grids,
+   command paths, permission models, latency, and telemetry fidelity.
+
+The layers are intentionally separate but not independent. The hardware layer
+defines the feasible action space for the algorithm layer: a policy cannot
+reliably select arbitrary MHz values if the platform only exposes discrete
+levels, range limits, privileged commands, or delayed/deferred clock changes.
+Conversely, the algorithm layer defines what the hardware layer must support:
+for example, a phase-aware runtime policy needs low-latency actuation and
+per-window clock verification, while an offline whole-workload selector may only
+need one pre-run clock setting plus a reliable reset path.
+
+For REPACSS, a required research step is therefore to characterize the concrete
+DVFS mechanisms available on the H100 and MI210 partitions before treating any
+algorithmic result as hardware-realizable.
+
 ## Current Status
 
 Implemented:
@@ -24,6 +54,9 @@ Still pending:
 2. Import/normalization helpers for external benchmark artifacts.
 3. Frozen processed-result schema under `analysis/schema`.
 4. End-to-end hardware validation on a real benchmark.
+5. REPACSS H100/MI210 DVFS capability characterization, including supported
+   clock discovery, actuation/reset methods, permission requirements, latency,
+   achieved-clock verification, and failure modes.
 
 ## Layout
 
@@ -66,6 +99,32 @@ everest
 ali_2022_reimpl
 ```
 
+## REPACSS Hardware Characterization
+
+Before implementing new hardware backends or reporting controlled-mode results,
+REPACSS-specific DVFS support should be measured and summarized as a capability
+matrix. This matrix should cover:
+
+1. NVIDIA H100 paths such as `nvidia-smi`, NVML, DCGM, and optional LIKWID/NVML
+   sysfeatures where available.
+2. AMD MI210 paths such as `amd-smi`, ROCm SMI, AMD SMI library calls, and
+   optional LIKWID ROCMON/sysfeatures where available.
+3. For each path: whether it is telemetry-only, actuation-capable, or both.
+4. Required privilege level for reads, clock changes, power-limit changes, and
+   reset/restore operations.
+5. Frequency representation: exact MHz, min/max ranges, supported levels, or
+   vendor-specific clock domains.
+6. Actuation latency, settling behavior, and whether the clock change is
+   immediate, deferred, or workload-dependent.
+7. Verification method for achieved clocks, power, utilization, and reset state.
+8. Portability notes: what is common across NVIDIA and AMD, what is vendor-only,
+   and what appears to be REPACSS-site policy rather than hardware capability.
+
+This characterization is not merely operational documentation. It feeds back
+into algorithm design by defining the legal decision set, timing assumptions,
+measurement overhead, and fallback behavior for each runtime policy. Student or
+operator-facing experiments should start here before changing policy code.
+
 ## Quick Start
 
 Requires Python >= 3.10. The code uses runtime union syntax and
@@ -101,3 +160,7 @@ Start with `docs/README.md`. The most-used docs are:
 4. `src/methods/README.md`: method taxonomy, registry, and add-policy rules.
 5. `config/README.md`: config directory ownership.
 6. `scripts/run/README.md`: Slurm/local runner commands and clock templates.
+
+For hardware-control details, start with `src/methods/README.md` for the
+telemetry-versus-actuation split and `scripts/run/README.md` for current runner
+environment variables and shell command templates.

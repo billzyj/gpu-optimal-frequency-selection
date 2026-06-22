@@ -22,6 +22,19 @@ class SweepPoint:
     power_w: float | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class LoadedProfile:
+    """Profile points plus provenance needed to audit oracle fidelity."""
+
+    sweep_points: list[SweepPoint]
+    mode: str
+    provenance: str
+    is_exact_workload: bool
+
+
+PAPER_FREQUENCY_FLOOR_MHZ = 900
+
+
 def choose_static_oracle_clock(
     sweep_points: list[SweepPoint],
     pd_target: float,
@@ -68,8 +81,13 @@ class StaticOraclePolicy:
 
     Supported config schema:
     1. `workload_profiles`: mapping from workload name to point lists.
-       Optional `default` entry is used as fallback.
-    2. `profile`: point list for all workloads.
+       Faithful mode requires an exact `workload_profiles[workload_name]`
+       entry.
+    2. `allow_proxy_profile`: optional bool. When true, the policy may use
+       `workload_profiles.default` or `profile` as a non-faithful proxy and
+       records that provenance in state and final summary.
+    3. `enforce_paper_frequency_floor`: optional bool, default true. When true,
+       points below the EVeREST-domain floor are ignored before selection.
 
     Point record keys:
     - frequency: `frequency_mhz` | `freq_mhz` | `clock_mhz`
@@ -84,8 +102,22 @@ class StaticOraclePolicy:
         context: ExperimentContext,
         config: Mapping[str, object],
     ) -> AlgorithmState:
-        sweep_points = _load_profile_for_workload(config, context.metadata.workload_name)
+        loaded_profile = _load_profile_for_workload(config, context.metadata.workload_name)
+        effective_min_frequency_mhz = _effective_min_frequency_mhz(context, config)
+        sweep_points, ignored_below_floor = _filter_points_by_frequency_floor(
+            loaded_profile.sweep_points,
+            effective_min_frequency_mhz,
+            loaded_profile.provenance,
+        )
         selected_point, meets_target = _select_static_oracle_point(sweep_points, context.pd_target)
+        target_ratio = 1.0 - _clamp(context.pd_target, 0.0, 0.99)
+        if loaded_profile.mode == "faithful" and not meets_target:
+            raise ValueError(
+                "StaticOraclePolicy exact workload profile does not contain any point meeting "
+                f"target_ratio={target_ratio:.6g} for workload "
+                f"{context.metadata.workload_name!r}."
+            )
+
         selected_clock_mhz = selected_point.frequency_mhz
         selected_clock_mhz = _clamp_int(
             selected_clock_mhz,
@@ -96,47 +128,62 @@ class StaticOraclePolicy:
         state = AlgorithmState()
         state.set("run_id", context.metadata.run_id)
         state.set("pd_target", context.pd_target)
-        state.set("target_ratio", 1.0 - _clamp(context.pd_target, 0.0, 0.99))
+        state.set("target_ratio", target_ratio)
         state.set("selected_clock_mhz", selected_clock_mhz)
         state.set("selection_meets_target", meets_target)
         state.set("selected_profile_performance_ratio", selected_point.performance_ratio)
-        state.set("decision_emitted", False)
+        state.set("selected_profile_frequency_mhz", selected_point.frequency_mhz)
+        state.set("profile_mode", loaded_profile.mode)
+        state.set("profile_provenance", loaded_profile.provenance)
+        state.set("profile_is_exact_workload", loaded_profile.is_exact_workload)
+        state.set("pre_run_target_graphics_clock_mhz", selected_clock_mhz)
+        state.set("effective_min_frequency_mhz", effective_min_frequency_mhz)
+        state.set("paper_frequency_floor_mhz", PAPER_FREQUENCY_FLOOR_MHZ)
+        state.set(
+            "enforces_paper_frequency_floor",
+            _config_bool(config, "enforce_paper_frequency_floor", True),
+        )
+        state.set("ignored_profile_points_below_floor", ignored_below_floor)
         state.set("total_windows", 0)
         state.set("pd_violation_count", 0)
         state.set("max_pd_violation", 0.0)
         return state
+
+    def initial_decision(
+        self,
+        context: ExperimentContext,  # noqa: ARG002 - kept for runner API symmetry.
+        state: AlgorithmState,
+    ) -> Decision:
+        selected_clock_mhz = int(
+            state.get("pre_run_target_graphics_clock_mhz", state.get("selected_clock_mhz"))
+        )
+        return Decision(
+            action=DecisionAction.SET_CLOCK,
+            target_graphics_clock_mhz=selected_clock_mhz,
+            reason_code="oracle_static_pre_run_apply_selected_clock",
+            debug_fields=_decision_debug_fields(state),
+        )
 
     def on_window(
         self,
         metrics: MetricWindow,
         state: AlgorithmState,
     ) -> Decision:
+        """Monitor-only window step.
+
+        The fixed clock is owned by ``initial_decision`` (applied once before
+        window 0), so this method never emits a clock change. It only counts
+        windows, tracks PD violations, and holds.
+        """
         total_windows = int(state.get("total_windows", 0)) + 1
         state.set("total_windows", total_windows)
         _update_pd_violation_if_present(metrics, state)
 
-        selected_clock_mhz = int(state.get("selected_clock_mhz"))
-        if not state.get("decision_emitted", False):
-            state.set("decision_emitted", True)
-            if _is_same_clock(metrics.graphics_clock_avg_mhz, selected_clock_mhz):
-                return Decision(
-                    action=DecisionAction.HOLD_CLOCK,
-                    target_graphics_clock_mhz=None,
-                    reason_code="oracle_static_already_at_target",
-                    debug_fields={"selected_clock_mhz": selected_clock_mhz},
-                )
-            return Decision(
-                action=DecisionAction.SET_CLOCK,
-                target_graphics_clock_mhz=selected_clock_mhz,
-                reason_code="oracle_static_apply_selected_clock",
-                debug_fields={"selected_clock_mhz": selected_clock_mhz},
-            )
-
         return Decision(
             action=DecisionAction.HOLD_CLOCK,
             target_graphics_clock_mhz=None,
-            reason_code="oracle_static_hold_selected_clock",
-            debug_fields={"selected_clock_mhz": selected_clock_mhz},
+            reason_code="oracle_static_monitor_hold",
+            debug_fields=_decision_debug_fields(state),
         )
 
     def finalize(self, state: AlgorithmState) -> FinalSummary:
@@ -154,26 +201,73 @@ class StaticOraclePolicy:
                 "selected_profile_performance_ratio": float(
                     state.get("selected_profile_performance_ratio", 0.0)
                 ),
+                "selected_profile_frequency_mhz": int(
+                    state.get("selected_profile_frequency_mhz", 0)
+                ),
+                "profile_mode": str(state.get("profile_mode", "")),
+                "profile_provenance": str(state.get("profile_provenance", "")),
+                "profile_is_exact_workload": bool(state.get("profile_is_exact_workload", False)),
+                "pre_run_target_graphics_clock_mhz": int(
+                    state.get("pre_run_target_graphics_clock_mhz", 0)
+                ),
+                "effective_min_frequency_mhz": int(state.get("effective_min_frequency_mhz", 0)),
+                "paper_frequency_floor_mhz": int(state.get("paper_frequency_floor_mhz", 0)),
+                "enforces_paper_frequency_floor": bool(
+                    state.get("enforces_paper_frequency_floor", False)
+                ),
+                "ignored_profile_points_below_floor": int(
+                    state.get("ignored_profile_points_below_floor", 0)
+                ),
             },
         )
 
 
-def _load_profile_for_workload(config: Mapping[str, object], workload_name: str) -> list[SweepPoint]:
-    profile_object: object | None = None
+def _load_profile_for_workload(config: Mapping[str, object], workload_name: str) -> LoadedProfile:
+    allow_proxy_profile = _config_bool(config, "allow_proxy_profile", False)
 
     raw_workload_profiles = config.get("workload_profiles")
     if isinstance(raw_workload_profiles, Mapping):
         if workload_name in raw_workload_profiles:
-            profile_object = raw_workload_profiles[workload_name]
-        elif "default" in raw_workload_profiles:
-            profile_object = raw_workload_profiles["default"]
+            provenance = f"workload_profiles[{workload_name}]"
+            return LoadedProfile(
+                sweep_points=_parse_profile_object(
+                    raw_workload_profiles[workload_name],
+                    provenance,
+                ),
+                mode="faithful",
+                provenance=provenance,
+                is_exact_workload=True,
+            )
+        if allow_proxy_profile and "default" in raw_workload_profiles:
+            provenance = "workload_profiles.default"
+            return LoadedProfile(
+                sweep_points=_parse_profile_object(raw_workload_profiles["default"], provenance),
+                mode="proxy",
+                provenance=provenance,
+                is_exact_workload=False,
+            )
 
-    if profile_object is None:
-        profile_object = config.get("profile")
+    if allow_proxy_profile and "profile" in config:
+        provenance = "profile"
+        return LoadedProfile(
+            sweep_points=_parse_profile_object(config.get("profile"), provenance),
+            mode="proxy",
+            provenance=provenance,
+            is_exact_workload=False,
+        )
 
+    raise ValueError(
+        "StaticOraclePolicy requires an exact workload profile at "
+        f"workload_profiles[{workload_name!r}] in faithful mode. Set "
+        "allow_proxy_profile=true only for explicitly labeled non-faithful "
+        "proxy runs."
+    )
+
+
+def _parse_profile_object(profile_object: object, provenance: str) -> list[SweepPoint]:
     if not isinstance(profile_object, list):
         raise ValueError(
-            "StaticOraclePolicy requires a profile list via workload_profiles[workload]/default or profile."
+            f"StaticOraclePolicy profile {provenance!r} must be a list of sweep points."
         )
     return [_parse_sweep_point(entry) for entry in profile_object]
 
@@ -182,7 +276,11 @@ def _parse_sweep_point(entry: object) -> SweepPoint:
     if not isinstance(entry, Mapping):
         raise ValueError("Each profile entry must be a mapping.")
 
-    frequency_mhz = _extract_required_number(entry, ("frequency_mhz", "freq_mhz", "clock_mhz"), "frequency")
+    frequency_mhz = _extract_required_number(
+        entry,
+        ("frequency_mhz", "freq_mhz", "clock_mhz"),
+        "frequency",
+    )
     performance_ratio = _extract_required_number(
         entry,
         ("performance_ratio", "perf_ratio", "relative_performance"),
@@ -196,7 +294,11 @@ def _parse_sweep_point(entry: object) -> SweepPoint:
     )
 
 
-def _extract_required_number(entry: Mapping[str, object], keys: tuple[str, ...], field_name: str) -> float:
+def _extract_required_number(
+    entry: Mapping[str, object],
+    keys: tuple[str, ...],
+    field_name: str,
+) -> float:
     for key in keys:
         value = entry.get(key)
         if isinstance(value, (int, float)):
@@ -233,8 +335,46 @@ def _update_pd_violation_if_present(metrics: MetricWindow, state: AlgorithmState
     state.set("max_pd_violation", max(float(state.get("max_pd_violation", 0.0)), violation))
 
 
-def _is_same_clock(observed_clock_mhz: float, target_clock_mhz: int) -> bool:
-    return abs(observed_clock_mhz - float(target_clock_mhz)) < 0.5
+def _decision_debug_fields(state: AlgorithmState) -> dict[str, object]:
+    return {
+        "selected_clock_mhz": int(state.get("selected_clock_mhz", 0)),
+        "pre_run_target_graphics_clock_mhz": int(
+            state.get("pre_run_target_graphics_clock_mhz", 0)
+        ),
+        "selection_meets_target": bool(state.get("selection_meets_target", False)),
+        "profile_mode": str(state.get("profile_mode", "")),
+        "profile_provenance": str(state.get("profile_provenance", "")),
+        "profile_is_exact_workload": bool(state.get("profile_is_exact_workload", False)),
+        "effective_min_frequency_mhz": int(state.get("effective_min_frequency_mhz", 0)),
+    }
+
+
+def _effective_min_frequency_mhz(
+    context: ExperimentContext,
+    config: Mapping[str, object],
+) -> int:
+    if not _config_bool(config, "enforce_paper_frequency_floor", True):
+        return context.platform.min_graphics_clock_mhz
+    if context.platform.max_graphics_clock_mhz >= PAPER_FREQUENCY_FLOOR_MHZ:
+        return max(context.platform.min_graphics_clock_mhz, PAPER_FREQUENCY_FLOOR_MHZ)
+    return context.platform.min_graphics_clock_mhz
+
+
+def _filter_points_by_frequency_floor(
+    sweep_points: list[SweepPoint],
+    effective_min_frequency_mhz: int,
+    provenance: str,
+) -> tuple[list[SweepPoint], int]:
+    filtered_points = [
+        point for point in sweep_points if point.frequency_mhz >= effective_min_frequency_mhz
+    ]
+    ignored_count = len(sweep_points) - len(filtered_points)
+    if not filtered_points:
+        raise ValueError(
+            f"StaticOraclePolicy profile {provenance!r} has no sweep points at or above "
+            f"effective_min_frequency_mhz={effective_min_frequency_mhz}."
+        )
+    return filtered_points, ignored_count
 
 
 def _power_or_inf(point: SweepPoint) -> float:
@@ -247,3 +387,10 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 def _clamp_int(value: int, lower: int, upper: int) -> int:
     return int(max(lower, min(value, upper)))
+
+
+def _config_bool(config: Mapping[str, object], key: str, default: bool) -> bool:
+    value = config.get(key)
+    if isinstance(value, bool):
+        return value
+    return default

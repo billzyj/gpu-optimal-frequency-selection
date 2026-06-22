@@ -81,6 +81,30 @@ class PhaseIdentifierTests(unittest.TestCase):
             if obs.is_stable:
                 self.assertFalse(obs.is_new_phase)
 
+    def test_erratic_utilization_window_is_not_stable(self) -> None:
+        identifier = PhaseIdentifier(window_seconds=3.0, change_threshold_pct=10.0)
+
+        identifier.observe(make_window(1, 40.0, 20.0))
+        identifier.observe(make_window(2, 72.0, 20.0))
+        erratic = identifier.observe(make_window(3, 40.0, 20.0))
+
+        self.assertFalse(erratic.is_stable)
+        self.assertIsNone(erratic.phase_id)
+        self.assertFalse(erratic.is_new_phase)
+
+    def test_small_absolute_change_near_zero_memory_does_not_start_new_phase(self) -> None:
+        identifier = PhaseIdentifier(window_seconds=3.0, change_threshold_pct=10.0)
+
+        for i in range(1, 4):
+            base_obs = identifier.observe(make_window(i, 60.0, 1.0))
+        self.assertTrue(base_obs.is_stable)
+
+        near_zero_noise = identifier.observe(make_window(4, 60.0, 2.0))
+
+        self.assertTrue(near_zero_noise.is_stable)
+        self.assertFalse(near_zero_noise.is_new_phase)
+        self.assertEqual(base_obs.phase_id, near_zero_noise.phase_id)
+
 
 if __name__ == "__main__":
     unittest.main()

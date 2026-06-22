@@ -97,28 +97,9 @@ if [[ -z "$CONTROL_LOOP_CMD" ]]; then
   CONTROL_LOOP_CMD="python3 \"$REPO_ROOT/scripts/run/control_loop.py\""
 fi
 
-echo "[orchestrator] repo_root=$REPO_ROOT"
-echo "[orchestrator] external_repo_root=$EXTERNAL_REPO_ROOT"
-echo "[orchestrator] policy=$POLICY_NAME pd_target=$PD_TARGET"
-echo "[orchestrator] bench_id=$BENCH_ID"
-echo "[orchestrator] bench_script=$BENCH_SCRIPT_ABS"
-echo "[orchestrator] run_dir=$RUN_DIR"
-
-# Start benchmark workload as a child process inside this allocation.
-# Do not submit a nested independent batch job from this layer.
-set +e
-bash -lc "\"$BENCH_SCRIPT_ABS\" $BENCH_ARGS" &
-BENCH_PID=$!
-set -e
-
-cleanup() {
-  if kill -0 "$BENCH_PID" >/dev/null 2>&1; then
-    kill "$BENCH_PID" >/dev/null 2>&1 || true
-  fi
-  reset_clock
-}
-
+BENCH_PID=""
 RESET_CLOCK_ATTEMPTED=0
+
 reset_clock() {
   if [[ -z "$APPLY_CLOCK_RESET_CMD" || "$RESET_CLOCK_ATTEMPTED" -ne 0 ]]; then
     return
@@ -133,12 +114,53 @@ reset_clock() {
     echo "[orchestrator] warning: clock reset command failed: $RESET_RC"
   fi
 }
+
+cleanup() {
+  if [[ -n "$BENCH_PID" ]] && kill -0 "$BENCH_PID" >/dev/null 2>&1; then
+    kill "$BENCH_PID" >/dev/null 2>&1 || true
+  fi
+  reset_clock
+}
 trap cleanup EXIT INT TERM
+
+echo "[orchestrator] repo_root=$REPO_ROOT"
+echo "[orchestrator] external_repo_root=$EXTERNAL_REPO_ROOT"
+echo "[orchestrator] policy=$POLICY_NAME pd_target=$PD_TARGET"
+echo "[orchestrator] bench_id=$BENCH_ID"
+echo "[orchestrator] bench_script=$BENCH_SCRIPT_ABS"
+echo "[orchestrator] run_dir=$RUN_DIR"
+
+# Export env the runner needs for the prelaunch initial decision. BENCH_PID is
+# exported after the benchmark starts.
+export REPO_ROOT EXTERNAL_REPO_ROOT POLICY_NAME PD_TARGET CONTROL_WINDOW_SECONDS
+export BENCH_ID BENCH_SCRIPT_ABS RUN_DIR CONTROL_LOG
+
+# Paper-faithful static/offline policies must set their whole-workload clock
+# before the workload starts. Online policies are not StaticPolicy instances, so
+# this prerun phase becomes a logged no-op for them.
+echo "[orchestrator] applying optional initial control decision before benchmark"
+set +e
+CONTROL_PHASE=prerun bash -lc "$CONTROL_LOOP_CMD"
+INITIAL_CONTROL_RC=$?
+set -e
+if [[ "$INITIAL_CONTROL_RC" -ne 0 ]]; then
+  echo "[orchestrator] initial control decision failed: $INITIAL_CONTROL_RC"
+  exit "$INITIAL_CONTROL_RC"
+fi
+# The windowed loop must not re-apply the pre-run decision; the prerun phase
+# above already set the clock before the benchmark starts.
+export CONTROL_PHASE=loop
+
+# Start benchmark workload as a child process inside this allocation.
+# Do not submit a nested independent batch job from this layer.
+set +e
+bash -lc "\"$BENCH_SCRIPT_ABS\" $BENCH_ARGS" &
+BENCH_PID=$!
+set -e
 
 # Export all env the runner needs; BENCH_PID tells the runner which process to
 # watch — it will loop internally until that pid exits, then finalize and return.
-export REPO_ROOT EXTERNAL_REPO_ROOT POLICY_NAME PD_TARGET CONTROL_WINDOW_SECONDS
-export BENCH_ID BENCH_SCRIPT_ABS RUN_DIR CONTROL_LOG BENCH_PID
+export BENCH_PID
 
 # Run the long-lived control loop runner once in the foreground.
 # It blocks and loops internally (initialize -> on_window* -> finalize) until

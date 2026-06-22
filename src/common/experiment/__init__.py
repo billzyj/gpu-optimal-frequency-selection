@@ -1,6 +1,6 @@
 """Experiment-level interfaces and data models."""
 
-from .interfaces import AlgorithmInterface
+from .interfaces import AlgorithmInterface, StaticPolicy
 from .types import (
     AlgorithmState,
     Decision,
@@ -24,6 +24,7 @@ __all__ = [
     "FinalSummary",
     "MetricWindow",
     "PlatformSpec",
+    "StaticPolicy",
     "TelemetrySample",
     "validate_decision",
 ]

@@ -56,21 +56,23 @@ implementation was checked against the extracted paper text in
 
 | Paper source | Paper behavior | Current implementation | Fidelity decision |
 |---|---|---|---|
-| `../paper/EVEREST_ppopp25.txt:63` | Analyses are limited above 900 MHz and performance is approximated as linear with frequency in that region. | `FrequencyScaler` clamps target frequency to a configurable floor, default `0.55 * f_max`, then rounds up to a supported step. | Use the paper's "about 55% of max" runtime floor as the implemented scaling floor. This is close to but not identical to the textual "above 900 MHz" across all GPUs; record platform-specific frequency bounds in runs. |
+| `../paper/EVEREST_ppopp25.txt:63` | Analyses are limited above 900 MHz and performance is approximated as linear with frequency in that region. | `FrequencyScaler` clamps target frequency to `max(0.55 * f_max, 900 MHz)` by default, bounded by platform and selected high-clock limits, then rounds up to a supported step. | Keep runtime decisions inside the analyzed domain when the platform makes that possible. |
 | `../paper/EVEREST_ppopp25.txt:89-103` | Measure memory utilization at max/high and one lower frequency; derive normalized frequency sensitivity `FS`. | `PhaseCharacterizer.estimate_frequency_sensitivity()` implements `(Mem_high / Mem_low - 1) / (f_high / f_low - 1)` and clamps to `[0, 1]`. | Direct implementation of Equation 2 in normalized form. |
 | `../paper/EVEREST_ppopp25.txt:103` | The low characterization frequency should remain fairly high, with example around 70% of max. | `EverestPolicy` defaults to `characterization_low_frequency_ratio = 0.70`, with optional explicit `characterization_low_frequency_mhz`. | Use 70% as the default because it is the only concrete low-probe example in the paper. |
 | `../paper/EVEREST_ppopp25.txt:117-122` | Compute the ideal frequency from `FS` and target `PD`. | `FrequencyScaler.compute_target_frequency()` implements Equation 4. | Direct implementation. |
-| `../paper/EVEREST_ppopp25.txt:143` | A stable average GPU/memory utilization window, e.g. 5s, reveals a phase; 10% utilization change indicates a phase change. | `PhaseIdentifier` uses a rolling weighted average, default 5s through the runner, and relative 10% change vs the last stable phase. | Paper-faithful minimum; exact signature discretization is not specified by the paper and is documented below as ambiguous. |
+| `../paper/EVEREST_ppopp25.txt:143` | A stable average GPU/memory utilization window, e.g. 5s, reveals a phase; 10% utilization change indicates a phase change. | `PhaseIdentifier` uses a rolling weighted average, requires the recent GPU and memory utilization spans to stay within the threshold, and treats the threshold as absolute utilization percentage points. | Paper-faithful minimum; exact signature discretization is not specified by the paper and is documented below as ambiguous. |
 | `../paper/EVEREST_ppopp25.txt:143` | GPU utilization is included in phase signatures to distinguish active low/zero-memory phases from initialization-like phases. | `PhaseIdentifier` includes both GPU and memory buckets plus an `idle_like` bit. | Faithful to the stated intent; exact idle thresholds are implementation choices. |
-| `../paper/EVEREST_ppopp25.txt:89-103,145` | For an uncharacterized phase, use memory utilization at max/high and one lower frequency; run at the lower frequency for the same window of time and measure average memory utilization. | `EverestPolicy` first obtains a high-frequency memory-utilization window (`Mem_high`), using the current stable window only when it is already at `f_high`; otherwise it sets `f_high` and uses the next window. It then sets `f_low` and uses the next `MetricWindow` as `Mem_low`. | Paper-faithful two-point characterization at the policy level. Full paper cadence with raw 1ms/10ms samples, 1s decision averages, and 5s phase windows needs extra aggregation; see Section 4.5. |
+| `../paper/EVEREST_ppopp25.txt:89-103,145` | For an uncharacterized phase, use memory utilization at max/high and one lower frequency; run at the lower frequency for the same window of time and measure average memory utilization. | `EverestPolicy` first obtains a high-frequency memory-utilization window (`Mem_high`), using the current stable window only when it is already at `f_high`; otherwise it sets `f_high` and uses the next window. It then sets `f_low` and uses the next `MetricWindow` as `Mem_low`. Both characterization windows must match the observed target clocks and the same phase anchor before the `FS` record is cached. | Paper-faithful two-point characterization at the policy level. Full paper cadence with raw 1ms/10ms samples, 1s decision averages, and 5s phase windows needs extra aggregation; see Section 4.5. |
 | `../paper/EVEREST_ppopp25.txt:151` | Round up to the next supported GPU frequency step. | `FrequencyScaler` quantizes up within platform bounds. | Direct implementation. |
 | `../paper/EVEREST_ppopp25.txt:153` | If phases are too short or erratic, EVeREST detects no phase and remains at max/default frequency. | Unstable/no-phase windows emit `everest_wait_for_stable_phase` and hold or set `f_high`. | Intentionally preserved. Do not add heuristics that force characterization of erratic phases in the EVeREST baseline. |
 
 The current policy deliberately stops after the paper-required high/low
-characterization measurements. It does not add clock-settle retries, retry caps,
-probe-abandon logic, fallback records, closed-loop PD correction, or
-re-characterization. These may be good ideas for a new method, but they are not
-described in the EVeREST paper and would contaminate the baseline comparison.
+characterization evidence is valid. It verifies observed clocks and phase
+continuity before caching, then defers invalid attempts by returning to the
+high/default frequency. It does not add retry loops, fallback `FS` records,
+closed-loop PD correction, or re-characterization. Those may be good ideas for a
+new method, but they are not described in the EVeREST paper and would
+contaminate the baseline comparison.
 
 ## 4.1 Runtime components
 
@@ -116,7 +118,8 @@ f_ideal = f_high / (1 + PD / (FS * (1 - PD)))
 Operational rules from paper:
 
 1. Use a low frequency that is still relatively high (example: ~30% below max) to reduce characterization overhead.
-2. Do not lower below ~55% of max frequency.
+2. Do not lower below ~55% of max frequency, and keep the default floor at or
+   above 900 MHz when platform bounds allow it.
 3. Use a phase window around `5s` (paper sensitivity shows `>1s` is generally stable).
 
 Note: OCR around Equation (3) is ambiguous in text extraction; Equation (4)
@@ -137,18 +140,30 @@ while app_running:
       if current_window_clock is not f_high:
         set_gpu_clock(f_high)
         wait/measure one characterization window
+        if observed_clock is not f_high or window no longer matches phase:
+          set_gpu_clock(f_high)
+          continue
         Mem_high = average memory utilization from that high window
       else:
         Mem_high = average memory utilization from current stable window
+      if Mem_high <= 0:
+        set_gpu_clock(f_high)
+        continue
       set_gpu_clock(f_low)
       wait/measure one characterization window
+      if observed_clock is not f_low or window no longer matches phase:
+        set_gpu_clock(f_high)
+        continue
       measure Mem_low from that window
+      if Mem_low <= 0:
+        set_gpu_clock(f_high)
+        continue
       FS = estimate_sensitivity(Mem_high, Mem_low, f_high, f_low)
       cache phase_id -> FS
 
     FS = cache[phase_id]
     f_ideal = compute_f_ideal(FS, PD)
-    f_ideal = clamp(f_ideal, min=0.55*f_max, max=f_max)
+    f_ideal = clamp(f_ideal, min=max(0.55*f_max, 900MHz), max=f_max)
     f_ideal = round_up_to_supported_step(f_ideal)
     set_gpu_clock(f_ideal)
   else:
@@ -164,7 +179,9 @@ This repository uses EVeREST's three paper stages as first-class modules. Each m
    - Output: stable/not-stable phase observation with `phase_id`.
    - Core rules:
      - Rolling window average over configurable duration (`5s` default).
-     - Phase change if utilization delta exceeds threshold (`10%` default).
+     - Phase is stable only if recent GPU and memory utilization remain within
+       the threshold over the window (`10` percentage points by default).
+     - Phase change if absolute utilization-point delta reaches the threshold.
      - Signature includes both GPU and memory utilization to separate "busy low-memory" from initialization-like behavior.
 2. `Phase Characterization`
    - Input: (`phase_id`, `Mem_high`, `Mem_low`, `f_high`, `f_low`).
@@ -173,12 +190,15 @@ This repository uses EVeREST's three paper stages as first-class modules. Each m
      - `FS = (Mem_high / Mem_low - 1) / (f_high / f_low - 1)`.
      - Clamp `FS` to `[0, 1]`.
      - Validate inputs (`mem_low > 0`, `f_low > 0`, `f_high > f_low`).
+     - Cache only observed high/low samples that match the target clocks and
+       still represent the same phase.
 3. `Frequency Scaling`
    - Input: (`f_high`, `FS`, `PD`, `PlatformSpec`).
    - Output: quantized target graphics clock.
    - Core rules:
      - `f_ideal = f_high / (1 + PD / (FS * (1 - PD)))`.
-     - Clamp to platform range with an EVeREST floor at `0.55 * f_max`.
+     - Clamp to platform range with an EVeREST floor at
+       `max(0.55 * f_max, 900 MHz)` by default.
      - Round up to the next supported hardware step.
 
 Default parameters used for paper-faithful runs:
@@ -187,38 +207,47 @@ Default parameters used for paper-faithful runs:
    `ExperimentContext.window_seconds`.
 2. `change_threshold_pct = 10.0`
 3. `min_ratio_of_max = 0.55`
-4. characterization low point recommendation: `f_low ~= 0.7 * f_high`
-5. `METRIC_SAMPLING_INTERVAL_MS = 1000` in the current runner harness. The
+4. `min_frequency_mhz = 900`
+5. characterization low point recommendation: `f_low ~= 0.7 * f_high`
+6. `clock_match_tolerance_mhz = max(platform_step / 2, 0.5)`
+7. `METRIC_SAMPLING_INTERVAL_MS = 1000` in the current runner harness. The
    paper reports raw sampling at 1ms on A100 and 10ms on MI250X, then averaging
    every 1s for decision-making; this repository does not yet implement that
    exact hardware sampling path.
 
-## 4.5 Reproduction Fidelity Decisions (do not "fix" these)
+## 4.5 Reproduction Fidelity Decisions (respect these)
 
 These are deliberate fidelity calls. They are documented here so that future contributors do not mistake faithful-to-paper behavior for a bug and "improve" it beyond the paper, which would erase contrast points for the proposed method.
 
-1. **Required high/low characterization without engineering guards.**
+1. **Required high/low characterization evidence before caching.**
    - The default EVeREST policy first obtains the paper-required high-frequency
      measurement for an uncharacterized phase: if the current stable window is
      already at `f_high`, it uses that window as `Mem_high`; otherwise it sets
      `f_high` and uses the next window as `Mem_high`. It then sets `f_low` and
      uses the next window as `Mem_low`.
-   - The policy does not add clock-settle retries, repeated clock verification,
-     probe-abandon logic when utilization shifts, attempt caps, or fallback to a
-     conservative `FS = 1` record.
+   - The policy accepts a characterization window only when the observed clock
+     matches the intended target within `clock_match_tolerance_mhz` and the
+     utilization still matches the same phase anchor. A rejected attempt returns
+     to `f_high` and leaves the phase uncharacterized.
+   - This is evidence validation, not an adaptive retry strategy: the baseline
+     does not add retry loops, attempt caps, fallback sensitivity records, or
+     closed-loop correction.
    - Reason: Sections 4.1 and 5.2 define frequency sensitivity from memory
-     utilization at high/max and low frequencies, but do not define retries,
-     settle tolerances, attempt caps, or corruption detection.
-   - Consequence: if actuation latency or phase drift corrupts either
-     characterization window, the EVeREST baseline can mispredict. This
-     limitation is useful contrast for a proposed method, not a baseline bug to
-     repair.
+     utilization at high/max and low frequencies for the same phase. Caching a
+     sample taken at the wrong clock or after phase drift would no longer be the
+     paper's two-point characterization.
+   - Consequence: invalid or delayed actuation can defer energy-saving decisions
+     for a phase, but it cannot poison the EVeREST cache.
 
-2. **Uncharacterizable / zero-memory phases keep `FS = 0` (intentionally NOT changed to "stay at max").**
-   - Reason codes: `everest_apply_without_low_frequency_probe` (no room to probe, `f_low >= f_high`) and `everest_apply_zero_mem_phase` (stable, GPU-active, `mem_util <= 0`).
-   - The paper is **silent** on these cases. Section 5.4's "remain at default (maximum) frequency" refers to **phase-detection failure** (no stable phase detected), not to a detected-but-uncharacterizable phase. Section 5.1 only uses GPU utilization to *distinguish* zero-memory phases in the signature; it never prescribes their frequency.
-   - `FS = 0` is internally consistent with EVeREST's MBU-to-FS model taken to the zero-memory limit: memory bandwidth utilization (MBU = data / wall-clock-time) is ~0 and invariant across frequency, so the model reads it as "not frequency-sensitive" and scales down to the `0.55 * f_max` floor.
-   - This preserves a real EVeREST blind spot: a compute-bound but near-zero-DRAM phase can be frequency-sensitive in reality, yet MBU labels it insensitive and the policy down-clocks it. The paper only nods at communication-bound 0%-memory phases as future work. Keep as-is for baseline contrast.
+2. **Uncharacterizable / zero-memory phases stay at high/default frequency.**
+   - Reason code: `everest_wait_for_characterizable_phase`.
+   - A stable phase with no valid `Mem_high`/`Mem_low` pair is not assigned a
+     synthetic `FS = 0` record. The paper describes phase characterization from
+     measured high/low memory utilization; without that evidence, the faithful
+     baseline remains conservative.
+   - This preserves the paper's no-phase/default-frequency safety behavior for
+     cases where the implementation cannot form the required characterization
+     evidence.
 
 3. **`Mem_high` and `Mem_low` averaging window (literal "same window of time").**
    - Paper Section 5.2 specifies both memory-utilization measurements are taken over "the same window of time" (the phase window).
@@ -265,24 +294,24 @@ Each item is framed as: EVeREST's choice -> Limitation -> Opportunity for the pr
    - Threshold-based change detection with little hysteresis/anti-flap handling. *Opportunity:* principled change-point detection.
 
 2. **Phase Characterization.**
-   - Single proxy (memory bandwidth utilization). It breaks for: compute-bound near-zero-DRAM phases (mislabeled `FS=0`, see 4.5.2), communication-bound phases (0% memory utilization despite NVLink/PCIe traffic, paper future work), and cache-bound phases. *Opportunity:* fuse a second low-overhead, vendor-portable signal (SM/FP activity, NVLink/PCIe counters) to disambiguate sensitivity.
+   - Single proxy (memory bandwidth utilization). It cannot characterize compute-bound near-zero-DRAM phases without a valid high/low memory-utilization pair, communication-bound phases with 0% memory utilization despite NVLink/PCIe traffic (paper future work), or cache-bound phases. *Opportunity:* fuse a second low-overhead, vendor-portable signal (SM/FP activity, NVLink/PCIe counters) to disambiguate sensitivity.
    - Two-point linear slope: `FS` is derived from `f_high` plus one `f_low` assuming performance varies linearly with frequency (Section 3.3). Non-linear voltage-frequency response introduces error. *Opportunity:* multi-point or curvature-aware characterization; analytic V-F model.
    - Online probe cost: each new phase is deliberately run at `f_low` for one window -> exploration overhead plus a real performance-degradation (PD) hit during the probe; this is the documented gap vs the static oracle (paper Section 7.2: 1.6-2.1% less energy than oracle). *Opportunity:* cheaper or perturbation-free characterization, or hybrid offline+online cached profiles.
    - Characterize-once, cache-forever: no drift detection, re-characterization, or confidence/invalidation -> stale `FS` is reused if behavior changes within a signature bucket. *Opportunity:* confidence-tracked records with periodic re-probe.
-   - `Mem_high` and `Mem_low` are one-window captures after set-clock decisions, with no settle retry or invalidation -> actuation latency or phase drift can bias `FS`. *Opportunity:* latency-aware or confidence-aware capture.
+   - `Mem_high` and `Mem_low` are one-window captures after set-clock decisions. Invalid observed clocks or phase drift defer caching, but the baseline still has no retry policy or confidence model. *Opportunity:* latency-aware or confidence-aware capture.
    - Current runner coupling: one `MetricWindow` is used as one characterization window. This is faithful with a 5s `MetricWindow`, but does not exactly reproduce the paper's raw 1ms/10ms sampling plus 1s decision-average cadence. *Opportunity:* separate raw telemetry sampling, 1s decision aggregates, and 5s characterization windows.
 
 3. **Frequency Scaling.**
    - Open-loop per phase: the target is computed once from the model and held; there is no closed-loop correction against measured wall-clock performance, so if MBU mispredicts, the PD guarantee silently breaks (the policy's PD-violation tracking is observational, not corrective). *Opportunity:* feedback control that corrects toward the realized performance target.
    - Performance is enforced through the MBU model, not measured performance. *Opportunity:* combine the model with a lightweight runtime performance signal.
-   - Hard floor at `0.55 * f_max`: caps achievable savings on deeply memory-bound phases that could tolerate lower clocks (Section 3.3 V-F rationale). *Opportunity:* device/phase-aware floor.
+   - Hard floor at `max(0.55 * f_max, 900 MHz)` by default: caps achievable savings on deeply memory-bound phases that could tolerate lower clocks (Section 3.3 V-F rationale). *Opportunity:* device/phase-aware floor.
    - Single actuation knob (graphics clock only): ignores memory clock, power capping, and multi-GPU power redistribution (which EAR performs). *Opportunity:* joint core+memory-clock or power-cap control, and node-level budget allocation.
    - Round-up-only quantization biases slightly toward performance over savings (minor and intentional).
 
 4. **Systemic / cross-cutting.**
    - Single-process, single-GPU assumption with GPU-wide metrics: cannot attribute utilization to co-located applications, so space-sharing breaks per-application PD guarantees (paper future work). *Opportunity:* per-application attribution under sharing.
    - Actuation latency ignored: decisions assume the next characterization window reflects the requested clock; transition/ramp is not modeled and the faithful baseline deliberately does not guard against it. *Opportunity:* latency-aware scheduling of clock changes.
-   - Hyperparameter sensitivity: window length, change threshold, low-probe ratio, and the 55% floor are hand-tuned constants (A100 / MI250X). *Opportunity:* auto-tuning and robustness analysis.
+   - Hyperparameter sensitivity: window length, change threshold, low-probe ratio, clock-match tolerance, and the frequency floor are hand-tuned constants (A100 / MI250X). *Opportunity:* auto-tuning and robustness analysis.
    - A single scalar PD target: no per-phase or time-varying performance budget. *Opportunity:* allocate the PD budget across phases to spend it where it yields the most energy savings.
 
 ## 5. Experiment Design

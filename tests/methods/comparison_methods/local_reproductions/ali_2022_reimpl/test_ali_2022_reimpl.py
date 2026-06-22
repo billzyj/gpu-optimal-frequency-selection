@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from src.common.experiment import StaticPolicy
 from src.common.experiment.types import (
     DecisionAction,
     ExperimentContext,
@@ -57,14 +58,20 @@ def make_window(sequence_id: int, clock_mhz: float) -> MetricWindow:
     )
 
 
-def ali_config(objective: str = "edp") -> dict[str, object]:
-    return {
+def ali_config(objective: str = "edp", **overrides: object) -> dict[str, object]:
+    config: dict[str, object] = {
         "objective": objective,
+        "reproduction_mode": "algorithmic_proxy",
         "frequencies_mhz": [900, 1200, 1500],
         "fp_activity": 1.0,
         "dram_activity": 1.0,
         "t_fmax_s": 1.0,
         "f_max_mhz": 1500,
+        "profiling_run_count": 3,
+        "sampling_interval_ms": 20,
+        "profiler_source": "dcgmi",
+        "profile_source": "max-frequency-profile-log",
+        "calibration_source": "offline-calibration-fit",
         "power_coefficients": {
             "alpha": 0.0,
             "beta": 0.0,
@@ -79,6 +86,8 @@ def ali_config(objective: str = "edp") -> dict[str, object]:
             "beta5": 0.0,
         },
     }
+    config.update(overrides)
+    return config
 
 
 class AliModelEquationTests(unittest.TestCase):
@@ -181,19 +190,96 @@ class AliObjectiveSelectionTests(unittest.TestCase):
 
 
 class AliPolicyTests(unittest.TestCase):
-    def test_policy_applies_selected_clock_once_then_holds(self) -> None:
+    def test_policy_rejects_duplicate_or_unsorted_frequency_candidates(self) -> None:
+        policy = AliFrequencySelectionPolicy()
+
+        for frequencies_mhz in ([900, 1200, 1200], [1200, 900, 1500]):
+            with self.subTest(frequencies_mhz=frequencies_mhz):
+                with self.assertRaisesRegex(ValueError, "strictly increasing"):
+                    policy.initialize(
+                        make_context(),
+                        ali_config(frequencies_mhz=frequencies_mhz),
+                    )
+
+    def test_policy_rejects_frequency_candidates_outside_platform_bounds(self) -> None:
+        policy = AliFrequencySelectionPolicy()
+
+        with self.assertRaisesRegex(ValueError, "platform graphics clock range"):
+            policy.initialize(
+                make_context(),
+                ali_config(frequencies_mhz=[600, 900, 1500]),
+            )
+
+    def test_policy_rejects_frequency_candidates_above_fmax(self) -> None:
+        policy = AliFrequencySelectionPolicy()
+
+        with self.assertRaisesRegex(ValueError, "must not exceed f_max_mhz"):
+            policy.initialize(
+                make_context(),
+                ali_config(frequencies_mhz=[900, 1200, 1500], f_max_mhz=1200),
+            )
+
+    def test_paper_faithful_mode_requires_fmax_to_match_max_candidate(self) -> None:
+        policy = AliFrequencySelectionPolicy()
+
+        with self.assertRaisesRegex(ValueError, "paper_faithful_gv100.*f_max_mhz"):
+            policy.initialize(
+                make_context(),
+                ali_config(
+                    reproduction_mode="paper_faithful_gv100",
+                    frequencies_mhz=[900, 1200],
+                    f_max_mhz=1500,
+                ),
+            )
+
+    def test_algorithmic_proxy_mode_allows_fmax_above_candidate_max_with_label(self) -> None:
+        policy = AliFrequencySelectionPolicy()
+        state = policy.initialize(
+            make_context(),
+            ali_config(frequencies_mhz=[900, 1200], f_max_mhz=1500),
+        )
+
+        summary = policy.finalize(state)
+
+        self.assertEqual(state.get("reproduction_mode"), "algorithmic_proxy")
+        self.assertEqual(summary.custom_summary["reproduction_mode"], "algorithmic_proxy")
+        self.assertEqual(summary.custom_summary["f_max_mhz"], 1500)
+        self.assertEqual(summary.custom_summary["frequencies_mhz"], [900, 1200])
+
+    def test_on_window_is_monitor_only(self) -> None:
         policy = AliFrequencySelectionPolicy()
         state = policy.initialize(make_context(), ali_config())
 
+        self.assertEqual(state.get("pre_run_target_graphics_clock_mhz"), 900)
+        self.assertTrue(state.get("requires_pre_run_clock"))
+
+        # on_window is monitor-only: the selected whole-workload clock is applied
+        # by initial_decision before window 0, so every window holds.
         first = policy.on_window(make_window(sequence_id=1, clock_mhz=1500.0), state)
-        self.assertEqual(first.action, DecisionAction.SET_CLOCK)
-        self.assertEqual(first.target_graphics_clock_mhz, 900)
-        self.assertEqual(first.reason_code, "ali_apply_selected_clock")
+        self.assertEqual(first.action, DecisionAction.HOLD_CLOCK)
+        self.assertIsNone(first.target_graphics_clock_mhz)
+        self.assertEqual(first.reason_code, "ali_monitor_hold")
+        self.assertEqual(first.debug_fields["pre_run_target_graphics_clock_mhz"], 900)
+        self.assertTrue(first.debug_fields["requires_pre_run_clock"])
 
         second = policy.on_window(make_window(sequence_id=2, clock_mhz=900.0), state)
         self.assertEqual(second.action, DecisionAction.HOLD_CLOCK)
         self.assertIsNone(second.target_graphics_clock_mhz)
-        self.assertEqual(second.reason_code, "ali_hold_selected_clock")
+        self.assertEqual(second.reason_code, "ali_monitor_hold")
+
+    def test_initial_decision_applies_selected_clock_before_window_zero(self) -> None:
+        policy = AliFrequencySelectionPolicy()
+        state = policy.initialize(make_context(), ali_config())
+
+        self.assertIsInstance(policy, StaticPolicy)
+        decision = policy.initial_decision(make_context(), state)
+
+        self.assertEqual(decision.action, DecisionAction.SET_CLOCK)
+        self.assertEqual(decision.target_graphics_clock_mhz, 900)
+        self.assertEqual(decision.reason_code, "ali_pre_run_apply_selected_clock")
+        self.assertEqual(decision.debug_fields["selected_clock_mhz"], 900)
+        self.assertEqual(decision.debug_fields["reproduction_mode"], "algorithmic_proxy")
+        self.assertEqual(state.get("total_windows"), 0)
 
     def test_policy_exports_selected_clock_and_objective_in_final_summary(self) -> None:
         policy = AliFrequencySelectionPolicy()
@@ -207,6 +293,20 @@ class AliPolicyTests(unittest.TestCase):
         self.assertEqual(summary.custom_summary["selected_clock_mhz"], 900)
         self.assertEqual(summary.custom_summary["objective"], "edp")
         self.assertEqual(summary.custom_summary["model_scope"], "offline_application_level")
+        self.assertEqual(summary.custom_summary["reproduction_mode"], "algorithmic_proxy")
+        self.assertEqual(summary.custom_summary["profiling_run_count"], 3)
+        self.assertEqual(summary.custom_summary["sampling_interval_ms"], 20)
+        self.assertEqual(summary.custom_summary["profiler_source"], "dcgmi")
+        self.assertEqual(summary.custom_summary["profile_source"], "max-frequency-profile-log")
+        self.assertEqual(summary.custom_summary["calibration_source"], "offline-calibration-fit")
+        self.assertEqual(summary.custom_summary["pre_run_target_graphics_clock_mhz"], 900)
+        self.assertTrue(summary.custom_summary["requires_pre_run_clock"])
+
+    def test_policy_rejects_energy_objective(self) -> None:
+        policy = AliFrequencySelectionPolicy()
+
+        with self.assertRaisesRegex(ValueError, "objective must be 'edp' or 'ed2p'"):
+            policy.initialize(make_context(), ali_config(objective="energy"))
 
 
 if __name__ == "__main__":

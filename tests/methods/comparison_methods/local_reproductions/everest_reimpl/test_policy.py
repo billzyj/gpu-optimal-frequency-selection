@@ -108,7 +108,7 @@ class EverestPolicyTests(unittest.TestCase):
         self.assertEqual(state.get("characterization_count"), 1)
         self.assertEqual(len(state.get("phase_cache")), 1)
         self.assertLess(second.target_graphics_clock_mhz, 1410)
-        self.assertGreaterEqual(second.target_graphics_clock_mhz, 780)
+        self.assertGreaterEqual(second.target_graphics_clock_mhz, 900)
         self.assertEqual(second.target_graphics_clock_mhz % 15, 0)
 
         cached_phase_id = next(iter(state.get("phase_cache")))
@@ -172,7 +172,7 @@ class EverestPaperFidelityTests(unittest.TestCase):
         self.assertEqual(pending["stage"], "capture_low")
         self.assertAlmostEqual(pending["mem_high"], 55.0, places=6)
 
-    def test_probe_window_finishes_characterization_without_low_clock_guard(self) -> None:
+    def test_probe_window_deferred_when_observed_clock_misses_low_target(self) -> None:
         policy = EverestPolicy()
         state = policy.initialize(
             _context(pd_target=0.1),
@@ -182,14 +182,14 @@ class EverestPaperFidelityTests(unittest.TestCase):
         policy.on_window(_window(0, mem=50.0, clock_mhz=1410.0), state)
         decision = policy.on_window(_window(1, mem=45.0, clock_mhz=1200.0), state)
 
-        self.assertEqual(decision.reason_code, "everest_apply_new_characterization")
+        self.assertEqual(decision.reason_code, "everest_defer_characterization_clock_mismatch")
+        self.assertEqual(decision.action, DecisionAction.SET_CLOCK)
+        self.assertEqual(decision.target_graphics_clock_mhz, 1410)
         self.assertIsNone(state.get("pending_characterization"))
-        self.assertEqual(state.get("characterization_count"), 1)
-        cached_record = next(iter(state.get("phase_cache").values()))
-        self.assertAlmostEqual(cached_record["mem_low"], 45.0, places=6)
-        self.assertNotIn("characterization_settle_retry_count", state.data)
+        self.assertEqual(state.get("characterization_count"), 0)
+        self.assertEqual(len(state.get("phase_cache")), 0)
 
-    def test_probe_window_with_gpu_util_change_is_still_characterized(self) -> None:
+    def test_probe_window_with_gpu_util_change_is_deferred_without_cache(self) -> None:
         policy = EverestPolicy()
         state = policy.initialize(
             _context(pd_target=0.1),
@@ -199,10 +199,24 @@ class EverestPaperFidelityTests(unittest.TestCase):
         policy.on_window(_window(0, gpu=60.0, mem=50.0, clock_mhz=1410.0), state)
         decision = policy.on_window(_window(1, gpu=80.0, mem=40.0, clock_mhz=990.0), state)
 
-        self.assertEqual(decision.reason_code, "everest_apply_new_characterization")
-        self.assertEqual(state.get("characterization_count"), 1)
-        self.assertEqual(len(state.get("phase_cache")), 1)
-        self.assertNotIn("characterization_abandoned_count", state.data)
+        self.assertEqual(decision.reason_code, "everest_defer_characterization_phase_drift")
+        self.assertEqual(decision.action, DecisionAction.SET_CLOCK)
+        self.assertEqual(decision.target_graphics_clock_mhz, 1410)
+        self.assertEqual(state.get("characterization_count"), 0)
+        self.assertEqual(len(state.get("phase_cache")), 0)
+
+    def test_zero_memory_phase_stays_uncharacterized_at_high_frequency(self) -> None:
+        policy = EverestPolicy()
+        state = policy.initialize(_context(pd_target=0.1), {"phase_window_seconds": 1.0})
+
+        decision = policy.on_window(_window(0, gpu=60.0, mem=0.0, clock_mhz=1410.0), state)
+
+        self.assertEqual(decision.reason_code, "everest_wait_for_characterizable_phase")
+        self.assertEqual(decision.action, DecisionAction.HOLD_CLOCK)
+        self.assertIsNone(decision.target_graphics_clock_mhz)
+        self.assertIsNone(state.get("pending_characterization"))
+        self.assertEqual(state.get("characterization_count"), 0)
+        self.assertEqual(len(state.get("phase_cache")), 0)
 
     def test_finalize_omits_non_paper_robustness_counters(self) -> None:
         policy = EverestPolicy()

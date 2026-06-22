@@ -60,6 +60,16 @@ class PhaseIdentifier:
                 is_idle_like=is_idle_like,
             )
 
+        if not self._is_history_stable():
+            return PhaseObservation(
+                phase_id=None,
+                is_stable=False,
+                is_new_phase=False,
+                gpu_util_avg_pct=gpu_avg_pct,
+                mem_util_avg_pct=mem_avg_pct,
+                is_idle_like=is_idle_like,
+            )
+
         signature = self._build_signature(gpu_avg_pct, mem_avg_pct, is_idle_like)
         phase_id = signature.to_phase_id()
 
@@ -121,8 +131,8 @@ class PhaseIdentifier:
         if is_idle_like != self._last_stable_idle_like:
             return True
 
-        gpu_delta_pct = self._relative_change_pct(gpu_avg_pct, self._last_stable_gpu_util_pct)
-        mem_delta_pct = self._relative_change_pct(mem_avg_pct, self._last_stable_mem_util_pct)
+        gpu_delta_pct = abs(gpu_avg_pct - self._last_stable_gpu_util_pct)
+        mem_delta_pct = abs(mem_avg_pct - self._last_stable_mem_util_pct)
         return gpu_delta_pct >= self.change_threshold_pct or mem_delta_pct >= self.change_threshold_pct
 
     def _build_signature(self, gpu_avg_pct: float, mem_avg_pct: float, is_idle_like: bool) -> PhaseSignature:
@@ -134,7 +144,12 @@ class PhaseIdentifier:
     def _is_idle_like(self, gpu_avg_pct: float, mem_avg_pct: float) -> bool:
         return gpu_avg_pct <= self.idle_gpu_threshold_pct and mem_avg_pct <= self.idle_mem_threshold_pct
 
-    @staticmethod
-    def _relative_change_pct(current: float, baseline: float) -> float:
-        denom = max(abs(baseline), 1.0)
-        return abs(current - baseline) * 100.0 / denom
+    def _is_history_stable(self) -> bool:
+        if not self._history:
+            return False
+
+        gpu_values = [window.gpu_util_avg_pct for window in self._history]
+        mem_values = [window.mem_util_avg_pct for window in self._history]
+        gpu_span = max(gpu_values) - min(gpu_values)
+        mem_span = max(mem_values) - min(mem_values)
+        return gpu_span < self.change_threshold_pct and mem_span < self.change_threshold_pct
