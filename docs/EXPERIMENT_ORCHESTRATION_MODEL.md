@@ -20,6 +20,11 @@ Use a two-layer adapter model with clear ownership:
 The two layers are complementary. External adapters own benchmark execution;
 local code owns policy decisions and comparison artifacts.
 
+Exception: a reviewed upstream method may be a self-contained controller that
+cannot expose recommendation-only decisions without rewriting its algorithm.
+Such a method uses the planned external-controller mode in Section 5.2; the
+ownership exception must be explicit in the run manifest.
+
 ## 3. Responsibility Split
 
 ### 3.1 External Execution Adapters
@@ -38,13 +43,16 @@ This repository owns:
 
 1. A single top-level experiment entrypoint.
 2. Real-time telemetry windowing and DVFS decisions.
-3. Frequency-control actuation.
+3. Frequency-control actuation in normal controlled mode, or exclusive
+   lifecycle/observability ownership around an approved upstream controller.
 4. Importing and validating external benchmark artifacts.
 5. Unified comparison outputs for methods and baselines.
 6. Slurm-integrated profiling/control for real-time frequency decisions.
 
-Current status: items 1, 2, 3, and 6 exist as a controlled-mode template and
-runner. Items 4 and 5 are specified but not implemented yet.
+Current status: the controlled-mode template, local policy loop, and local
+`ClockController` actuation path exist. External-controller
+lifecycle/observability, artifact import, and unified comparison outputs are
+specified but not implemented yet.
 
 ## 4. Execution Ownership Rule
 
@@ -90,7 +98,36 @@ Implemented flow:
 8. The orchestrator waits for the benchmark process and returns the first
    non-zero exit code from the control loop or benchmark.
 
-### 5.2 Benchmark-Only Selection Mode (Secondary)
+### 5.2 External-Controller Mode (Planned)
+
+Use only for a pinned upstream method, such as GEEPAFS, that combines telemetry,
+policy logic, and privileged actuation in one process.
+
+Required behavior:
+
+1. Launch the upstream controller as a child/sidecar in the benchmark
+   allocation and record its exact commit, license, arguments, and local patch
+   or configuration hash.
+2. Give the upstream process exclusive clock-actuation ownership; do not run the
+   local `ClockController` concurrently.
+3. Record the controller PID and exit code. If the controller exits before the
+   benchmark, terminate the benchmark and fail the run; when the benchmark
+   exits, terminate and reap the controller.
+4. Parse requested decisions when the upstream log/API exposes them; otherwise
+   record `requested_unknown`. Independently sample observed clocks and
+   normalize both streams into comparison artifacts.
+5. After the controller is stopped, the local orchestrator owns the final reset
+   and verifies the restored clock state. This preserves one active actuation
+   owner at a time.
+6. Test startup failure, benchmark failure, signal handling, early controller
+   exit, benchmark termination, and final clock reset.
+7. Mark the run mode and actuation owner in the run manifest so it cannot be
+   confused with an in-process `AlgorithmInterface` result.
+
+This mode is not implemented. Do not register or execute an upstream controller
+through the current controlled mode until this ownership contract is enforced.
+
+### 5.3 Benchmark-Only Selection Mode (Secondary)
 
 Use to select workloads, inputs, and final experiment candidates without
 running a control policy.
@@ -213,9 +250,17 @@ repository's schema and enforce:
 
 ## 11. Implementation Priorities
 
-1. Add hardware-backed `WindowTelemetryProvider` implementations.
-2. Add typed `ClockController` backends (NVML / AMD-SMI) behind the existing
+1. Add supported clock grids and enforce the existing method-capability
+   contracts during startup. Explicit performance-target semantics and
+   manifest conversions are implemented.
+2. Implement and test the external-controller ownership contract.
+3. Add hardware-backed `WindowTelemetryProvider` implementations.
+4. Add typed `ClockController` backends (NVML / AMD-SMI) behind the existing
    protocol, keeping `ShellTemplateController` as the fallback path.
-3. Add import/validation helpers for external benchmark artifacts.
-4. Freeze the processed-output schema in `analysis/schema`.
-5. Add one end-to-end controlled benchmark validation run.
+5. Add import/validation helpers for external benchmark artifacts.
+6. Freeze the processed-output schema in `analysis/schema`.
+7. Add one end-to-end controlled benchmark validation run before attempting the
+   preferred GEEPAFS sidecar port.
+
+The method-specific ordering and artifact decisions are in
+`docs/COMPARISON_METHOD_INTEGRATION_PLAN.md`.

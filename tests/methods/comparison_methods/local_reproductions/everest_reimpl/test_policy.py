@@ -11,6 +11,7 @@ from src.common.experiment.types import (
     ExperimentContext,
     ExperimentMetadata,
     MetricWindow,
+    PerformanceTargetType,
     PlatformSpec,
 )
 from src.methods.registry import resolve_policy, supported_policy_names
@@ -27,7 +28,12 @@ _PLATFORM = PlatformSpec(
 )
 
 
-def _context(pd_target: float = 0.1) -> ExperimentContext:
+def _context(
+    pd_target: float = 0.1,
+    performance_target_type: PerformanceTargetType = (
+        PerformanceTargetType.RELATIVE_PERFORMANCE_LOSS
+    ),
+) -> ExperimentContext:
     return ExperimentContext(
         platform=_PLATFORM,
         metadata=ExperimentMetadata(
@@ -40,6 +46,7 @@ def _context(pd_target: float = 0.1) -> ExperimentContext:
         pd_target=pd_target,
         window_seconds=1.0,
         sampling_interval_ms=1000,
+        performance_target_type=performance_target_type,
     )
 
 
@@ -71,6 +78,34 @@ class EverestPolicyTests(unittest.TestCase):
     def test_registry_resolves_everest_policy(self) -> None:
         self.assertIn("everest", supported_policy_names())
         self.assertIsInstance(resolve_policy("everest"), EverestPolicy)
+
+    def test_runtime_slowdown_is_normalized_before_frequency_scaling(self) -> None:
+        policy = EverestPolicy()
+        state = policy.initialize(
+            _context(
+                pd_target=0.1,
+                performance_target_type=PerformanceTargetType.RUNTIME_SLOWDOWN,
+            ),
+            {"phase_window_seconds": 1.0},
+        )
+
+        self.assertAlmostEqual(state.get("pd_target"), 0.1, places=12)
+        self.assertAlmostEqual(state.get("relative_performance_loss"), 1.0 / 11.0, places=12)
+        self.assertAlmostEqual(state.get("minimum_performance_ratio"), 10.0 / 11.0, places=12)
+
+        policy.on_window(_window(0, mem=50.0, clock_mhz=1410.0), state)
+        decision = policy.on_window(_window(1, mem=40.0, clock_mhz=990.0), state)
+
+        self.assertAlmostEqual(
+            decision.debug_fields["relative_performance_loss"],
+            1.0 / 11.0,
+            places=12,
+        )
+        self.assertAlmostEqual(
+            decision.debug_fields["minimum_performance_ratio"],
+            10.0 / 11.0,
+            places=12,
+        )
 
     def test_unstable_window_holds_when_already_at_high_frequency(self) -> None:
         policy = EverestPolicy()

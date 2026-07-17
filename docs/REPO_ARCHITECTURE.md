@@ -30,10 +30,16 @@ surfaces:
 
 1. `src/common/telemetry` only has an environment-variable provider today, and
    `src/common/control` only has the shell-template actuation backend.
-2. `src/common/power`, `src/common/io`, and `src/common/cli` are placeholders.
-3. External benchmark artifact import/normalization is specified but not
+2. Platform validation still assumes a uniformly spaced clock grid rather than
+   an explicit device-supported list.
+3. Comparison-method contracts now declare telemetry, offline artifacts,
+   control knobs, integration route, implementation state, and actuation owner,
+   but preflight is not yet enforced at startup and vendor/cadence constraints
+   are not modeled.
+4. `src/common/power`, `src/common/io`, and `src/common/cli` are placeholders.
+5. External benchmark artifact import/normalization is specified but not
    implemented.
-4. `analysis/schema` is not yet frozen, so downstream result consumers should
+6. `analysis/schema` is not yet frozen, so downstream result consumers should
    treat artifact layouts as provisional.
 
 ## 3. Layering
@@ -118,6 +124,13 @@ Directly usable existing implementations should be pinned under
 `external/<repo>` and exposed through local adapters in this directory. The
 adapter may launch, import, or parse the external implementation, but the runner
 and other methods should not import third-party code directly.
+
+The reviewed GEEPAFS artifact is a planned special case: its programs own
+telemetry and actuation, and its C version is documented as an upstream daemon.
+It requires an explicit external-controller run mode, not a fake in-process
+`AlgorithmInterface` wrapper. SYnergy and LATEST remain external harness/tool
+integrations and do not belong in the stable policy registry. See
+`docs/COMPARISON_METHOD_INTEGRATION_PLAN.md`.
 
 ### 4.5 `external/*` Submodules
 
@@ -256,14 +269,28 @@ provisional and record schema assumptions in each analysis script or notebook.
 
 ## 10. Recommended Expansion Order
 
-1. Add a hardware telemetry provider behind `WindowTelemetryProvider`.
-2. Add a hardware `ClockController` backend (NVML / AMD-SMI) behind the existing
-   protocol; the shell-template backend already covers the transitional path.
-3. Validate `POLICY_NAME=everest` with one real controlled benchmark.
-4. Add import/validation helpers for `external/repacss-benchmarking` artifacts.
-5. Freeze analysis schema and add integration tests for controlled and
-   import-only runs.
-6. Add the proposed method only after baseline artifact contracts are stable.
+1. Complete explicit supported-clock grids and enforce the existing
+   method-capability declarations during startup. Typed target semantics and
+   manifest conversions are already implemented.
+2. Define exclusive external-controller ownership, logging, failure, and reset
+   semantics for upstream daemons.
+3. Add hardware telemetry and `ClockController` backends (NVML / AMD-SMI) and
+   characterize the target platforms.
+4. Validate the five existing registered policies with controlled hardware
+   runs before expanding the registry.
+5. Complete the required GEEPAFS comparison, preferably through a pinned
+   sidecar if the target-GPU port is feasible; otherwise reclassify and disclose
+   the required implementation changes.
+6. Complete the final-paper EnergyUCB runtime policy around the implemented and
+   equation-tested switching/QoS core; keep DRLCap conditional on artifacts,
+   license, and retraining feasibility.
+7. Add LATEST only as an external characterization CLI/parser and SYnergy only
+   as an optional SYCL-native harness.
+8. Add import/validation helpers, freeze the analysis schema, and add
+   integration tests for controlled and import-only runs.
+9. Consider offline, program-integrated, simulator, and domain-specific methods
+   only after the central application-transparent comparison is complete.
+10. Add the proposed method only after baseline artifact contracts are stable.
 
 ## 11. Orchestration Boundary
 

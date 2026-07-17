@@ -21,7 +21,9 @@ set -euo pipefail
 #
 # Optional environment variables:
 # - POLICY_NAME: algorithm/policy label (default: max_freq)
-# - PD_TARGET: performance-degradation target (default: 0.0)
+# - PERFORMANCE_TARGET_TYPE: runtime_slowdown, relative_performance_loss, or none
+#   (default: runtime_slowdown)
+# - PD_TARGET: raw target value interpreted by PERFORMANCE_TARGET_TYPE (default: 0.0)
 # - CONTROL_WINDOW_SECONDS: per-window sleep interval used by the runner (default: 5)
 # - SITE_PROFILE: external site profile (default: repacss_zen4)
 # - EXPERIMENT_ID: experiment id in run artifacts (default: controlled)
@@ -44,6 +46,7 @@ set -euo pipefail
 # BENCH_ID=ior,\
 # BENCH_RUN_SCRIPT=benchmarks/ior/adapters/repacss/run.sh,\
 # POLICY_NAME=max_freq,\
+# PERFORMANCE_TARGET_TYPE=runtime_slowdown,\
 # PD_TARGET=0.1,\
 # CONTROL_WINDOW_SECONDS=10 \
 # scripts/run/controlled_mode.sbatch
@@ -54,6 +57,7 @@ EXTERNAL_REPO_ROOT="${EXTERNAL_REPO_ROOT:-${REPO_ROOT}/external/repacss-benchmar
 BENCH_ID="${BENCH_ID:-}"
 BENCH_RUN_SCRIPT="${BENCH_RUN_SCRIPT:-}"
 POLICY_NAME="${POLICY_NAME:-max_freq}"
+PERFORMANCE_TARGET_TYPE="${PERFORMANCE_TARGET_TYPE:-runtime_slowdown}"
 PD_TARGET="${PD_TARGET:-0.0}"
 CONTROL_WINDOW_SECONDS="${CONTROL_WINDOW_SECONDS:-5}"
 SITE_PROFILE="${SITE_PROFILE:-repacss_zen4}"
@@ -125,14 +129,15 @@ trap cleanup EXIT INT TERM
 
 echo "[orchestrator] repo_root=$REPO_ROOT"
 echo "[orchestrator] external_repo_root=$EXTERNAL_REPO_ROOT"
-echo "[orchestrator] policy=$POLICY_NAME pd_target=$PD_TARGET"
+echo "[orchestrator] policy=$POLICY_NAME performance_target_type=$PERFORMANCE_TARGET_TYPE pd_target=$PD_TARGET"
 echo "[orchestrator] bench_id=$BENCH_ID"
 echo "[orchestrator] bench_script=$BENCH_SCRIPT_ABS"
 echo "[orchestrator] run_dir=$RUN_DIR"
 
 # Export env the runner needs for the prelaunch initial decision. BENCH_PID is
 # exported after the benchmark starts.
-export REPO_ROOT EXTERNAL_REPO_ROOT POLICY_NAME PD_TARGET CONTROL_WINDOW_SECONDS
+export REPO_ROOT EXTERNAL_REPO_ROOT POLICY_NAME PERFORMANCE_TARGET_TYPE PD_TARGET
+export CONTROL_WINDOW_SECONDS
 export BENCH_ID BENCH_SCRIPT_ABS RUN_DIR CONTROL_LOG
 
 # Paper-faithful static/offline policies must set their whole-workload clock

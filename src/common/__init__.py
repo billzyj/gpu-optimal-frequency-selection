@@ -9,8 +9,12 @@ from .experiment import (
     ExperimentMetadata,
     FinalSummary,
     MetricWindow,
+    PerformanceTarget,
+    PerformanceTargetType,
     PlatformSpec,
     TelemetrySample,
+    relative_performance_loss_to_runtime_slowdown,
+    runtime_slowdown_to_relative_performance_loss,
     validate_decision,
 )
 
@@ -23,7 +27,11 @@ __all__ = [
     "ExperimentMetadata",
     "FinalSummary",
     "MetricWindow",
+    "PerformanceTarget",
+    "PerformanceTargetType",
     "PlatformSpec",
     "TelemetrySample",
+    "relative_performance_loss_to_runtime_slowdown",
+    "runtime_slowdown_to_relative_performance_loss",
     "validate_decision",
 ]

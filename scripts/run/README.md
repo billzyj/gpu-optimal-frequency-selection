@@ -39,6 +39,7 @@ sbatch --export=ALL,\
 BENCH_ID=ior,\
 BENCH_RUN_SCRIPT=benchmarks/ior/adapters/repacss/run.sh,\
 POLICY_NAME=max_freq,\
+PERFORMANCE_TARGET_TYPE=runtime_slowdown,\
 PD_TARGET=0.10,\
 CONTROL_WINDOW_SECONDS=10 \
 scripts/run/controlled_mode.sbatch
@@ -71,13 +72,18 @@ For direct `control_loop.py` runs:
 ## Common Optional Variables
 
 1. `POLICY_NAME`: default `max_freq`.
-2. `PD_TARGET`: default `0.0`.
-3. `CONTROL_WINDOW_SECONDS`: default `5.0`.
-4. `MAX_CONSECUTIVE_FAILURES`: default `5`.
-5. `POLICY_CONFIG_PATH` or `POLICY_CONFIG_JSON`: policy-specific config.
-6. `CONTROL_DECISIONS_CSV`: override for decision CSV output.
-7. `APPLY_CLOCK_CMD_TEMPLATE`: shell command template for applying a clock.
-8. `APPLY_CLOCK_RESET_CMD`: cleanup command for restoring hardware clock state.
+2. `PERFORMANCE_TARGET_TYPE`: `runtime_slowdown`,
+   `relative_performance_loss`, or `none`; runner default `runtime_slowdown`.
+3. `PD_TARGET`: raw target value interpreted by `PERFORMANCE_TARGET_TYPE`;
+   default `0.0`. A runtime slowdown `delta` is converted to relative
+   performance loss `delta / (1 + delta)` and minimum performance ratio
+   `1 / (1 + delta)` before a constrained policy consumes it.
+4. `CONTROL_WINDOW_SECONDS`: default `5.0`.
+5. `MAX_CONSECUTIVE_FAILURES`: default `5`.
+6. `POLICY_CONFIG_PATH` or `POLICY_CONFIG_JSON`: policy-specific config.
+7. `CONTROL_DECISIONS_CSV`: override for decision CSV output.
+8. `APPLY_CLOCK_CMD_TEMPLATE`: shell command template for applying a clock.
+9. `APPLY_CLOCK_RESET_CMD`: cleanup command for restoring hardware clock state.
 
 ## Supported Policies
 
@@ -128,7 +134,9 @@ Notes:
 1. `policy_state.json` is an observability snapshot, not the source of truth for
    a live long-lived run.
 2. `run_manifest.json` records environment, policy config hash, repository
-   commit, dirty status, and external submodule status.
+   commit, dirty status, external submodule status, and a typed
+   `performance_target` object containing the raw value plus normalized runtime
+   slowdown, relative performance loss, and minimum performance ratio.
 3. `final_summary.json` is written even when the runner aborts after repeated
    per-window failures.
 

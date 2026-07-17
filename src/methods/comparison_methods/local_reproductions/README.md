@@ -6,6 +6,12 @@ implementation exists, or when available code cannot be used unchanged through a
 thin adapter. Each subdirectory should be traceable to explicit citation
 metadata before it is used in experiments or manuscript claims.
 
+Planned candidates and their public-artifact decisions are tracked in
+`docs/COMPARISON_METHOD_INTEGRATION_PLAN.md`. An algorithm-core scaffold may be
+listed once its directory and explicit scope exist, but it remains unavailable
+to experiments until a policy implementation and registry entry pass the
+admission checklist.
+
 ## Citation Ledger
 
 | Directory | Local reproduction target | Primary citation | DOI / URL | Source cache trace | Implementation status |
@@ -13,6 +19,7 @@ metadata before it is used in experiments or manuscript claims.
 | `everest_reimpl/` | EVeREST runtime GPU energy-saving method: phase identification, phase characterization, and frequency scaling. | Anna Yue, Pen-Chung Yew, and Sanyam Mehta. 2025. "EVeREST: An Effective and Versatile Runtime Energy Saving Tool for GPUs." PPoPP '25. | <https://doi.org/10.1145/3710848.3710875> | `topics/power_management`, item_key `8AY5ISNG`; co-located source copy in `everest_reimpl/paper/`. | Core stages and online `EverestPolicy` implemented; hardware telemetry/control validation pending. |
 | `ali_2022_reimpl/` | Ali HPEC 2022 analytical GPU frequency-selection baseline based on offline power/performance model calibration. | Ghazanfar Ali, Sridutt Bhalachandra, Nicholas J. Wright, Mert Side, and Yong Chen. 2022. "Optimal GPU Frequency Selection using Multi-Objective Approaches for HPC Systems." HPEC 2022. | <https://doi.org/10.1109/HPEC55821.2022.9926317> | `topics/power_management`, item_key `D9D98WW7`; co-located source copy in `ali_2022_reimpl/paper/`. | Implemented as `AliFrequencySelectionPolicy` with policy name `ali_2022_reimpl`; coefficients and DCGMI field mapping must be verified before numerical reproduction claims. |
 | `oracle_static/` | Static oracle baseline: choose the lowest offline-swept frequency that satisfies a target performance-degradation bound. | Evaluation baseline used in EVeREST and related GPU DVFS comparisons; not a standalone published method. Cite the paper whose evaluation protocol is being reproduced, currently EVeREST. | <https://doi.org/10.1145/3710848.3710875> | `topics/power_management`, item_key `8AY5ISNG`; local ignored source cache may live in `oracle_static/paper/`, with EVeREST also cached under `everest_reimpl/paper/`. | Implemented as `StaticOraclePolicy`; baseline scope recorded in `oracle_static/docs/ORACLE_STATIC_REPRODUCTION_PLAN.md`. |
+| `energyucb_reimpl/` | Final-paper EnergyUCB switching-aware bandit and QoS-constrained frequency selector. | Xiongxiao Xu, Solomon Abera Bekele, Brice Videau, and Kai Shu. 2026. "Online GPU Energy Optimization with Switching-Aware Bandits." The Web Conference 2026. | <https://doi.org/10.1145/3774904.3793034> | `topics/power_management`, item_key `LKDU943F`; source PDF/text remains in the read-only topic/Zotero cache. | Pure algorithm core only: reward equation, optimistic state, empirical update, UCB/switching indices, deterministic argmax, and QoS feasible set are equation-tested. No telemetry, progress estimator, control loop, policy, config, or registry entry exists yet. |
 
 Runtime policy names are defined in `src/methods/registry.py`:
 

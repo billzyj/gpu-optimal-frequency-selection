@@ -31,6 +31,7 @@ from src.common.experiment import (
     ExperimentContext,
     ExperimentMetadata,
     MetricWindow,
+    PerformanceTargetType,
     PlatformSpec,
 )
 from src.common.telemetry import EnvTelemetryProvider
@@ -43,6 +44,7 @@ _MANIFEST_ENV_KEYS = (
     "MAX_WINDOWS",
     "POLICY_NAME",
     "PD_TARGET",
+    "PERFORMANCE_TARGET_TYPE",
     "CONTROL_WINDOW_SECONDS",
     "CONTROL_DECISIONS_CSV",
     "METRIC_SAMPLING_INTERVAL_MS",
@@ -176,6 +178,7 @@ def write_run_manifest(
     """Writes reproducibility metadata for one controlled run."""
     path.parent.mkdir(parents=True, exist_ok=True)
     policy_config_dict = dict(policy_config)
+    performance_target = context.performance_target
     payload = {
         "generated_at_utc": utc_now(),
         "run": {
@@ -185,6 +188,13 @@ def write_run_manifest(
             "workload_name": context.metadata.workload_name,
             "started_at_utc": context.metadata.started_at_utc,
             "pd_target": context.pd_target,
+            "performance_target": {
+                "type": performance_target.target_type.value,
+                "raw_value": performance_target.raw_value,
+                "runtime_slowdown": performance_target.runtime_slowdown,
+                "relative_performance_loss": performance_target.relative_performance_loss,
+                "minimum_performance_ratio": performance_target.minimum_performance_ratio,
+            },
             "window_seconds": context.window_seconds,
             "sampling_interval_ms": context.sampling_interval_ms,
         },
@@ -290,6 +300,9 @@ def build_context(
         pd_target=parse_float_env("PD_TARGET", 0.0),
         window_seconds=parse_float_env("CONTROL_WINDOW_SECONDS", 5.0),
         sampling_interval_ms=parse_int_env("METRIC_SAMPLING_INTERVAL_MS", 1000),
+        performance_target_type=PerformanceTargetType.parse(
+            os.getenv("PERFORMANCE_TARGET_TYPE", PerformanceTargetType.RUNTIME_SLOWDOWN.value)
+        ),
     )
 
 

@@ -50,18 +50,22 @@ def choose_static_oracle_clock(
     Returns:
         (selected_frequency_mhz, meets_target_in_profile)
     """
-    selected, meets_target = _select_static_oracle_point(sweep_points, pd_target)
+    minimum_performance_ratio = 1.0 - _clamp(pd_target, 0.0, 0.99)
+    selected, meets_target = _select_static_oracle_point(
+        sweep_points,
+        minimum_performance_ratio,
+    )
     return selected.frequency_mhz, meets_target
 
 
 def _select_static_oracle_point(
     sweep_points: list[SweepPoint],
-    pd_target: float,
+    minimum_performance_ratio: float,
 ) -> tuple[SweepPoint, bool]:
     if not sweep_points:
         raise ValueError("sweep_points must be non-empty.")
 
-    target_ratio = 1.0 - _clamp(pd_target, 0.0, 0.99)
+    target_ratio = _clamp(minimum_performance_ratio, 0.0, 1.0)
     valid_points = [point for point in sweep_points if point.performance_ratio >= target_ratio]
 
     if valid_points:
@@ -102,6 +106,8 @@ class StaticOraclePolicy:
         context: ExperimentContext,
         config: Mapping[str, object],
     ) -> AlgorithmState:
+        relative_performance_loss = context.require_relative_performance_loss()
+        minimum_performance_ratio = context.require_minimum_performance_ratio()
         loaded_profile = _load_profile_for_workload(config, context.metadata.workload_name)
         effective_min_frequency_mhz = _effective_min_frequency_mhz(context, config)
         sweep_points, ignored_below_floor = _filter_points_by_frequency_floor(
@@ -109,8 +115,11 @@ class StaticOraclePolicy:
             effective_min_frequency_mhz,
             loaded_profile.provenance,
         )
-        selected_point, meets_target = _select_static_oracle_point(sweep_points, context.pd_target)
-        target_ratio = 1.0 - _clamp(context.pd_target, 0.0, 0.99)
+        selected_point, meets_target = _select_static_oracle_point(
+            sweep_points,
+            minimum_performance_ratio,
+        )
+        target_ratio = minimum_performance_ratio
         if loaded_profile.mode == "faithful" and not meets_target:
             raise ValueError(
                 "StaticOraclePolicy exact workload profile does not contain any point meeting "
@@ -128,6 +137,9 @@ class StaticOraclePolicy:
         state = AlgorithmState()
         state.set("run_id", context.metadata.run_id)
         state.set("pd_target", context.pd_target)
+        state.set("performance_target_type", context.performance_target_type.value)
+        state.set("relative_performance_loss", relative_performance_loss)
+        state.set("minimum_performance_ratio", minimum_performance_ratio)
         state.set("target_ratio", target_ratio)
         state.set("selected_clock_mhz", selected_clock_mhz)
         state.set("selection_meets_target", meets_target)
@@ -198,6 +210,13 @@ class StaticOraclePolicy:
                 "selected_clock_mhz": int(state.get("selected_clock_mhz", 0)),
                 "selection_meets_target": bool(state.get("selection_meets_target", False)),
                 "target_ratio": float(state.get("target_ratio", 1.0)),
+                "performance_target_type": str(state.get("performance_target_type", "")),
+                "relative_performance_loss": float(
+                    state.get("relative_performance_loss", 0.0)
+                ),
+                "minimum_performance_ratio": float(
+                    state.get("minimum_performance_ratio", 1.0)
+                ),
                 "selected_profile_performance_ratio": float(
                     state.get("selected_profile_performance_ratio", 0.0)
                 ),
@@ -342,6 +361,7 @@ def _decision_debug_fields(state: AlgorithmState) -> dict[str, object]:
             state.get("pre_run_target_graphics_clock_mhz", 0)
         ),
         "selection_meets_target": bool(state.get("selection_meets_target", False)),
+        "minimum_performance_ratio": float(state.get("minimum_performance_ratio", 1.0)),
         "profile_mode": str(state.get("profile_mode", "")),
         "profile_provenance": str(state.get("profile_provenance", "")),
         "profile_is_exact_workload": bool(state.get("profile_is_exact_workload", False)),

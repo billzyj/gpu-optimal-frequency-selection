@@ -41,6 +41,8 @@ class EverestPolicy:
         context: ExperimentContext,
         config: Mapping[str, object],
     ) -> AlgorithmState:
+        relative_performance_loss = context.require_relative_performance_loss()
+        minimum_performance_ratio = context.require_minimum_performance_ratio()
         phase_window_seconds = _config_float(
             config,
             "phase_window_seconds",
@@ -115,6 +117,9 @@ class EverestPolicy:
         state = AlgorithmState()
         state.set("run_id", context.metadata.run_id)
         state.set("pd_target", context.pd_target)
+        state.set("performance_target_type", context.performance_target_type.value)
+        state.set("relative_performance_loss", relative_performance_loss)
+        state.set("minimum_performance_ratio", minimum_performance_ratio)
         state.set("phase_window_seconds", phase_window_seconds)
         state.set("change_threshold_pct", change_threshold_pct)
         state.set("min_ratio_of_max", min_ratio_of_max)
@@ -256,6 +261,13 @@ class EverestPolicy:
                 "cache_miss_count": int(state.get("cache_miss_count", 0)),
                 "scaled_decision_count": int(state.get("scaled_decision_count", 0)),
                 "reset_to_high_count": int(state.get("reset_to_high_count", 0)),
+                "performance_target_type": str(state.get("performance_target_type", "")),
+                "relative_performance_loss": float(
+                    state.get("relative_performance_loss", 0.0)
+                ),
+                "minimum_performance_ratio": float(
+                    state.get("minimum_performance_ratio", 1.0)
+                ),
                 "f_high_mhz": int(state.get("f_high_mhz", 0)),
                 "f_low_mhz": int(state.get("f_low_mhz", 0)),
             },
@@ -421,7 +433,7 @@ class EverestPolicy:
         scaled = self._frequency_scaler.compute_target_frequency(
             freq_high_mhz=int(state.get("f_high_mhz")),
             fs=record.fs,
-            pd=float(state.get("pd_target", 0.0)),
+            pd=float(state.get("relative_performance_loss", 0.0)),
             platform=_platform_from_state(metrics, state),
             min_ratio_of_max=float(state.get("min_ratio_of_max", 0.55)),
             min_frequency_mhz=int(state.get("min_frequency_mhz", _DEFAULT_MIN_FREQUENCY_MHZ)),
@@ -436,6 +448,10 @@ class EverestPolicy:
             "clamped_frequency_mhz": scaled.clamped_frequency_mhz,
             "min_allowed_mhz": scaled.min_allowed_mhz,
             "max_allowed_mhz": scaled.max_allowed_mhz,
+            "relative_performance_loss": scaled.pd_used,
+            "minimum_performance_ratio": float(
+                state.get("minimum_performance_ratio", 1.0)
+            ),
         }
         return self._set_clock_decision(
             metrics=metrics,
@@ -610,7 +626,7 @@ def _update_pd_violation_if_present(metrics: MetricWindow, state: AlgorithmState
     if perf_ratio is None:
         return
 
-    target_ratio = 1.0 - _clamp(float(state.get("pd_target", 0.0)), 0.0, 0.99)
+    target_ratio = float(state.get("minimum_performance_ratio", 1.0))
     violation = max(0.0, target_ratio - perf_ratio)
     if violation <= 0:
         return

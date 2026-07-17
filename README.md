@@ -46,15 +46,29 @@ Implemented:
 4. Comparison policies: `max_freq`, `min_freq`, `oracle_static`,
    `everest`, and `ali_2022_reimpl`.
 5. Long-lived controlled-mode runner in `scripts/run/control_loop.py`.
-6. Unit tests for policies, telemetry, validation, and runner behavior.
+6. Explicit performance-target types and conversions, with normalized values
+   recorded in the run manifest and consumed by target-aware policies.
+7. Machine-readable comparison-method routing/capability contracts in
+   `src/methods/comparison_methods/contracts.py`.
+8. A deliberately unregistered EnergyUCB algorithm-core scaffold covering the
+   final paper's reward equation, initialization, UCB indices, switching
+   penalty, deterministic selection, and QoS feasible set.
+9. Unit tests for policies, telemetry, validation, runner behavior, contracts,
+   target conversion, and the EnergyUCB equation core.
 
 Still pending:
 
 1. Hardware-backed telemetry and clock-control adapters.
-2. Import/normalization helpers for external benchmark artifacts.
-3. Frozen processed-result schema under `analysis/schema`.
-4. End-to-end hardware validation on a real benchmark.
-5. REPACSS H100/MI210 DVFS capability characterization, including supported
+2. Explicit irregular supported-clock grids and automatic method-capability
+   preflight at policy/controller startup.
+3. Required GEEPAFS comparison, preferably through a pinned sidecar if the
+   target-GPU port is feasible, and completion of the EnergyUCB live telemetry,
+   progress, policy, and actuation path; DRLCap remains conditional on
+   licensing, artifacts, and retraining feasibility.
+4. Import/normalization helpers for external benchmark artifacts.
+5. Frozen processed-result schema under `analysis/schema`.
+6. End-to-end hardware validation on a real benchmark.
+7. REPACSS H100/MI210 DVFS capability characterization, including supported
    clock discovery, actuation/reset methods, permission requirements, latency,
    achieved-clock verification, and failure modes.
 
@@ -154,12 +168,14 @@ with defaults but accepts runtime hyperparameters.
 Start with `docs/README.md`. The most-used docs are:
 
 1. `docs/REPO_ARCHITECTURE.md`: structure, ownership, and extension rules.
-2. `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`: controlled-mode runtime model.
-3. `docs/EXTERNAL_BENCHMARK_IMPORT_RULES.md`: external artifact import
+2. `docs/COMPARISON_METHOD_INTEGRATION_PLAN.md`: verified public artifacts and
+   direct-call, adapter, reproduction, component, or literature-only routing.
+3. `docs/EXPERIMENT_ORCHESTRATION_MODEL.md`: controlled-mode runtime model.
+4. `docs/EXTERNAL_BENCHMARK_IMPORT_RULES.md`: external artifact import
    contract.
-4. `src/methods/README.md`: method taxonomy, registry, and add-policy rules.
-5. `config/README.md`: config directory ownership.
-6. `scripts/run/README.md`: Slurm/local runner commands and clock templates.
+5. `src/methods/README.md`: method taxonomy, registry, and add-policy rules.
+6. `config/README.md`: config directory ownership.
+7. `scripts/run/README.md`: Slurm/local runner commands and clock templates.
 
 For hardware-control details, start with `src/methods/README.md` for the
 telemetry-versus-actuation split and `scripts/run/README.md` for current runner

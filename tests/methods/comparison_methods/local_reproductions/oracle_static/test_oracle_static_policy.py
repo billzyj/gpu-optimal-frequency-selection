@@ -8,6 +8,7 @@ from src.common.experiment.types import (
     ExperimentContext,
     ExperimentMetadata,
     MetricWindow,
+    PerformanceTargetType,
     PlatformSpec,
 )
 from src.methods.comparison_methods.local_reproductions.oracle_static import (
@@ -20,6 +21,9 @@ from src.methods.comparison_methods.local_reproductions.oracle_static import (
 def make_context(
     workload_name: str = "lammps-reaxff",
     pd_target: float = 0.1,
+    performance_target_type: PerformanceTargetType = (
+        PerformanceTargetType.RELATIVE_PERFORMANCE_LOSS
+    ),
 ) -> ExperimentContext:
     return ExperimentContext(
         platform=PlatformSpec(
@@ -40,6 +44,7 @@ def make_context(
         pd_target=pd_target,
         window_seconds=5.0,
         sampling_interval_ms=1000,
+        performance_target_type=performance_target_type,
     )
 
 
@@ -93,6 +98,28 @@ class StaticOracleSelectorTests(unittest.TestCase):
 
 
 class StaticOraclePolicyTests(unittest.TestCase):
+    def test_runtime_slowdown_uses_converted_minimum_performance_ratio(self) -> None:
+        policy = StaticOraclePolicy()
+        state = policy.initialize(
+            context=make_context(
+                pd_target=0.1,
+                performance_target_type=PerformanceTargetType.RUNTIME_SLOWDOWN,
+            ),
+            config={
+                "workload_profiles": {
+                    "lammps-reaxff": [
+                        {"frequency_mhz": 1410, "performance_ratio": 1.0},
+                        {"frequency_mhz": 1260, "performance_ratio": 0.92},
+                        {"frequency_mhz": 1110, "performance_ratio": 0.905},
+                    ]
+                }
+            },
+        )
+
+        self.assertEqual(state.get("selected_clock_mhz"), 1260)
+        self.assertAlmostEqual(state.get("relative_performance_loss"), 1.0 / 11.0, places=12)
+        self.assertAlmostEqual(state.get("minimum_performance_ratio"), 10.0 / 11.0, places=12)
+
     def test_on_window_is_monitor_only(self) -> None:
         policy = StaticOraclePolicy()
         state = policy.initialize(
